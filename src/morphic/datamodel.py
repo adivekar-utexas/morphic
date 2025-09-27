@@ -183,9 +183,47 @@ class DataModel:
     @classmethod
     def _convert_single_type(cls, target_type: Type, value: Any) -> Any:
         """Convert value to a single target type."""
-        # If already the right type, return as-is
-        if isinstance(value, target_type):
+        # Handle generic types first before isinstance check
+        origin_type = get_origin(target_type)
+        if origin_type is not None:
+            # Handle List[DataModel] or similar list structures
+            if origin_type is list:
+                type_args = get_args(target_type)
+                if type_args and isinstance(value, list):
+                    element_type = type_args[0]
+                    # Convert each element if it's a DataModel type
+                    if cls._is_datamodel_type(element_type):
+                        return [cls._convert_single_type(element_type, item) for item in value]
+                    # For non-DataModel types, try basic conversion
+                    else:
+                        return [cls._convert_single_type(element_type, item) for item in value]
+                return value
+
+            # Handle Dict[str, DataModel] or similar dict structures
+            elif origin_type is dict:
+                type_args = get_args(target_type)
+                if len(type_args) >= 2 and isinstance(value, dict):
+                    key_type, value_type = type_args[0], type_args[1]
+                    # Convert dict values
+                    converted_dict = {}
+                    for k, v in value.items():
+                        converted_key = cls._convert_single_type(key_type, k)
+                        converted_value = cls._convert_single_type(value_type, v)
+                        converted_dict[converted_key] = converted_value
+                    return converted_dict
+                return value
+
+            # For other generic types, return as-is
             return value
+
+        # If already the right type, return as-is (only for non-generic types)
+        try:
+            if isinstance(value, target_type):
+                return value
+        except TypeError:
+            # Some types (like subscripted generics) can't be used with isinstance
+            pass
+
 
         # Handle AutoEnum conversion (if available in morphic)
         if hasattr(target_type, "__bases__"):
@@ -259,6 +297,44 @@ class DataModel:
                 result[field_name] = value.to_dict(
                     exclude_none=exclude_none, exclude_defaults=exclude_defaults
                 )
+            # Handle lists that might contain DataModel objects
+            elif isinstance(value, list):
+                converted_list = []
+                for item in value:
+                    if hasattr(item, "to_dict"):
+                        converted_list.append(item.to_dict(exclude_none=exclude_none, exclude_defaults=exclude_defaults))
+                    elif hasattr(item, "value"):
+                        # Handle enums in lists
+                        try:
+                            from .autoenum import AutoEnum
+                            if isinstance(item, AutoEnum):
+                                converted_list.append(str(item))
+                            else:
+                                converted_list.append(item.value)
+                        except ImportError:
+                            converted_list.append(item.value if hasattr(item, "value") else str(item))
+                    else:
+                        converted_list.append(item)
+                result[field_name] = converted_list
+            # Handle dictionaries that might contain DataModel objects
+            elif isinstance(value, dict):
+                converted_dict = {}
+                for k, v in value.items():
+                    if hasattr(v, "to_dict"):
+                        converted_dict[k] = v.to_dict(exclude_none=exclude_none, exclude_defaults=exclude_defaults)
+                    elif hasattr(v, "value"):
+                        # Handle enums in dict values
+                        try:
+                            from .autoenum import AutoEnum
+                            if isinstance(v, AutoEnum):
+                                converted_dict[k] = str(v)
+                            else:
+                                converted_dict[k] = v.value
+                        except ImportError:
+                            converted_dict[k] = v.value if hasattr(v, "value") else str(v)
+                    else:
+                        converted_dict[k] = v
+                result[field_name] = converted_dict
             # Convert enums to their value (AutoEnum and other enums)
             elif hasattr(value, "value"):
                 try:
@@ -358,11 +434,47 @@ class DataModel:
         """Convert value to a single target type with strict rules.
 
         Only converts nested DataModel objects and enums, not basic types.
+        Also handles hierarchical structures like List[DataModel] and Dict[str, DataModel].
         """
-        # Handle generic types (e.g., List[str], Dict[str, int])
+        # Handle generic types (e.g., List[DataModel], Dict[str, DataModel])
         origin_type = get_origin(target_type)
         if origin_type is not None:
-            # For generic types, don't try to convert - return as-is
+            # Handle List[DataModel] or similar list structures
+            if origin_type is list:
+                type_args = get_args(target_type)
+                if type_args and isinstance(value, list):
+                    element_type = type_args[0]
+                    # Convert each element if it's a DataModel type
+                    if cls._is_datamodel_type(element_type) and all(isinstance(item, dict) for item in value):
+                        return [element_type(**item) for item in value]
+                    # Also handle nested conversions for existing DataModel instances
+                    elif cls._is_datamodel_type(element_type):
+                        converted_items = []
+                        for item in value:
+                            if isinstance(item, dict):
+                                converted_items.append(element_type(**item))
+                            else:
+                                converted_items.append(item)
+                        return converted_items
+                return value
+
+            # Handle Dict[str, DataModel] or similar dict structures
+            elif origin_type is dict:
+                type_args = get_args(target_type)
+                if len(type_args) >= 2 and isinstance(value, dict):
+                    value_type = type_args[1]  # Second type arg is the value type
+                    # Convert dict values if they're DataModel types
+                    if cls._is_datamodel_type(value_type):
+                        converted_dict = {}
+                        for k, v in value.items():
+                            if isinstance(v, dict):
+                                converted_dict[k] = value_type(**v)
+                            else:
+                                converted_dict[k] = v
+                        return converted_dict
+                return value
+
+            # For other generic types, don't try to convert - return as-is
             # Validation will handle checking the container type
             return value
 
@@ -422,6 +534,18 @@ class DataModel:
         # Do NOT convert basic types (int, float, str, bool) - maintain strict validation
         # Return value as-is and let validation catch type mismatches
         return value
+
+    @classmethod
+    def _is_datamodel_type(cls, target_type: Type) -> bool:
+        """Check if a type is a DataModel subclass."""
+        if not hasattr(target_type, "__bases__"):
+            return False
+        try:
+            return any(
+                issubclass(base, DataModel) for base in target_type.__bases__ if isinstance(base, type)
+            )
+        except TypeError:
+            return False
 
     def _validate_types(self) -> None:
         """Validate that all field values match their type annotations."""

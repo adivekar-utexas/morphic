@@ -468,17 +468,20 @@ class TestTypeConversion:
         field_mock = Mock()
         field_mock.type = Union[int, str]
 
-        # Mock get_origin and get_args for Union type
-        with (
-            patch("morphic.datamodel.get_origin") as mock_origin,
-            patch("morphic.datamodel.get_args") as mock_args,
-        ):
-            mock_origin.return_value = Union
-            mock_args.return_value = (int, str)
+        # Should try to convert to int first
+        result = SimpleDataModel._convert_value(field_mock, "42")
+        assert result == 42
 
-            # Should try to convert to int first
-            result = SimpleDataModel._convert_value(field_mock, "42")
-            assert result == 42
+        # Should convert to string if int conversion fails
+        result2 = SimpleDataModel._convert_value(field_mock, "hello")
+        assert result2 == "hello"
+
+        # Should try int conversion first, then str
+        field_mock2 = Mock()
+        field_mock2.type = Union[str, int]  # Different order
+        result3 = SimpleDataModel._convert_value(field_mock2, "42")
+        # This should still convert to str since it's the first type in the union
+        assert result3 == "42"
 
 
 class TestEdgeCases:
@@ -627,6 +630,338 @@ class TestIntegration:
         # The extended model should have the extra field in its instance
         assert hasattr(extended_model, "extra_field")
         assert extended_model.extra_field == "test"
+
+
+class TestHierarchicalTyping:
+    """Test hierarchical typing support for complex nested structures."""
+
+    def test_list_of_datamodels_constructor(self):
+        """Test constructor with list of DataModel dictionaries."""
+
+        class PersonList(DataModel):
+            people: List[SimpleDataModel]
+
+        data = PersonList(people=[
+            {"name": "John", "age": 30, "active": True},
+            {"name": "Jane", "age": 25, "active": False}
+        ])
+
+        assert len(data.people) == 2
+        assert isinstance(data.people[0], SimpleDataModel)
+        assert isinstance(data.people[1], SimpleDataModel)
+        assert data.people[0].name == "John"
+        assert data.people[1].name == "Jane"
+
+    def test_list_of_datamodels_from_dict(self):
+        """Test from_dict with list of DataModel objects."""
+
+        class PersonList(DataModel):
+            people: List[SimpleDataModel]
+
+        input_data = {
+            "people": [
+                {"name": "John", "age": "30", "active": "True"},  # String conversion
+                {"name": "Jane", "age": "25", "active": "False"}
+            ]
+        }
+
+        data = PersonList.from_dict(input_data)
+
+        assert len(data.people) == 2
+        assert isinstance(data.people[0], SimpleDataModel)
+        assert data.people[0].name == "John"
+        assert data.people[0].age == 30  # Converted from string
+        assert data.people[1].name == "Jane"
+        assert data.people[1].age == 25  # Converted from string
+
+    def test_dict_of_datamodels_constructor(self):
+        """Test constructor with dictionary of DataModel objects."""
+
+        class PersonDict(DataModel):
+            users: Dict[str, SimpleDataModel]
+
+        data = PersonDict(users={
+            "admin": {"name": "Admin", "age": 35, "active": True},
+            "guest": {"name": "Guest", "age": 20, "active": False}
+        })
+
+        assert len(data.users) == 2
+        assert isinstance(data.users["admin"], SimpleDataModel)
+        assert isinstance(data.users["guest"], SimpleDataModel)
+        assert data.users["admin"].name == "Admin"
+        assert data.users["guest"].name == "Guest"
+
+    def test_dict_of_datamodels_from_dict(self):
+        """Test from_dict with dictionary of DataModel objects."""
+
+        class PersonDict(DataModel):
+            users: Dict[str, SimpleDataModel]
+
+        input_data = {
+            "users": {
+                "admin": {"name": "Admin", "age": "35", "active": "True"},
+                "guest": {"name": "Guest", "age": "20", "active": "False"}
+            }
+        }
+
+        data = PersonDict.from_dict(input_data)
+
+        assert len(data.users) == 2
+        assert isinstance(data.users["admin"], SimpleDataModel)
+        assert data.users["admin"].age == 35  # Converted from string
+        assert data.users["guest"].age == 20  # Converted from string
+
+    def test_nested_list_in_datamodel(self):
+        """Test deeply nested structure with lists inside DataModel objects."""
+
+        class TaskList(DataModel):
+            title: str
+            tasks: List[str]
+
+        class Project(DataModel):
+            name: str
+            task_lists: List[TaskList]
+
+        data = Project(
+            name="My Project",
+            task_lists=[
+                {"title": "Todo", "tasks": ["task1", "task2"]},
+                {"title": "Done", "tasks": ["completed1"]}
+            ]
+        )
+
+        assert data.name == "My Project"
+        assert len(data.task_lists) == 2
+        assert isinstance(data.task_lists[0], TaskList)
+        assert data.task_lists[0].title == "Todo"
+        assert data.task_lists[0].tasks == ["task1", "task2"]
+        assert data.task_lists[1].title == "Done"
+        assert data.task_lists[1].tasks == ["completed1"]
+
+    def test_mixed_list_types(self):
+        """Test list with mixed nested and basic types."""
+
+        class Contact(DataModel):
+            name: str
+            email: str
+
+        class ContactList(DataModel):
+            contacts: List[Contact]
+            tags: List[str]
+
+        data = ContactList(
+            contacts=[
+                {"name": "John", "email": "john@example.com"},
+                {"name": "Jane", "email": "jane@example.com"}
+            ],
+            tags=["work", "personal"]
+        )
+
+        assert len(data.contacts) == 2
+        assert isinstance(data.contacts[0], Contact)
+        assert data.contacts[0].name == "John"
+        assert data.tags == ["work", "personal"]
+
+    def test_optional_hierarchical_fields(self):
+        """Test optional fields with hierarchical types."""
+
+        class Address(DataModel):
+            street: str
+            city: str
+
+        class Person(DataModel):
+            name: str
+            addresses: Optional[List[Address]] = None
+            metadata: Optional[Dict[str, str]] = None
+
+        # Test with None values
+        person1 = Person(name="John")
+        assert person1.addresses is None
+        assert person1.metadata is None
+
+        # Test with actual values
+        person2 = Person(
+            name="Jane",
+            addresses=[{"street": "123 Main St", "city": "NYC"}],
+            metadata={"role": "admin", "department": "IT"}
+        )
+
+        assert len(person2.addresses) == 1
+        assert isinstance(person2.addresses[0], Address)
+        assert person2.addresses[0].street == "123 Main St"
+        assert person2.metadata == {"role": "admin", "department": "IT"}
+
+    def test_hierarchical_to_dict(self):
+        """Test to_dict with hierarchical structures."""
+
+        class Item(DataModel):
+            id: int
+            name: str
+
+        class Inventory(DataModel):
+            items: List[Item]
+            categories: Dict[str, Item]
+
+        inventory = Inventory(
+            items=[{"id": 1, "name": "Item1"}, {"id": 2, "name": "Item2"}],
+            categories={"tools": {"id": 3, "name": "Hammer"}}
+        )
+
+        result = inventory.to_dict()
+
+        expected = {
+            "items": [
+                {"id": 1, "name": "Item1"},
+                {"id": 2, "name": "Item2"}
+            ],
+            "categories": {
+                "tools": {"id": 3, "name": "Hammer"}
+            }
+        }
+
+        assert result == expected
+
+    def test_hierarchical_with_enums(self):
+        """Test hierarchical structures containing enums."""
+
+        class StatusItem(DataModel):
+            name: str
+            status: SimpleEnum
+
+        class StatusList(DataModel):
+            items: List[StatusItem]
+            default_status: SimpleEnum = SimpleEnum.VALUE_A
+
+        data = StatusList(
+            items=[
+                {"name": "Item1", "status": "VALUE_A"},
+                {"name": "Item2", "status": "VALUE_B"}
+            ]
+        )
+
+        assert len(data.items) == 2
+        assert isinstance(data.items[0], StatusItem)
+        assert data.items[0].status == SimpleEnum.VALUE_A
+        assert data.items[1].status == SimpleEnum.VALUE_B
+
+        # Test to_dict conversion
+        result = data.to_dict()
+        assert result["items"][0]["status"] == "VALUE_A"
+        assert result["items"][1]["status"] == "VALUE_B"
+        assert result["default_status"] == "VALUE_A"
+
+    def test_deeply_nested_structures(self):
+        """Test very deep nesting of DataModel objects."""
+
+        class Level3(DataModel):
+            value: str
+
+        class Level2(DataModel):
+            level3_items: List[Level3]
+
+        class Level1(DataModel):
+            level2_dict: Dict[str, Level2]
+
+        data = Level1(level2_dict={
+            "section1": {
+                "level3_items": [
+                    {"value": "deep1"},
+                    {"value": "deep2"}
+                ]
+            },
+            "section2": {
+                "level3_items": [
+                    {"value": "deep3"}
+                ]
+            }
+        })
+
+        assert len(data.level2_dict) == 2
+        assert isinstance(data.level2_dict["section1"], Level2)
+        assert len(data.level2_dict["section1"].level3_items) == 2
+        assert isinstance(data.level2_dict["section1"].level3_items[0], Level3)
+        assert data.level2_dict["section1"].level3_items[0].value == "deep1"
+        assert data.level2_dict["section2"].level3_items[0].value == "deep3"
+
+    def test_hierarchical_validation_errors(self):
+        """Test that validation works correctly in hierarchical structures."""
+
+        class ValidatedItem(DataModel):
+            name: str
+            count: int
+
+            def validate(self):
+                if self.count < 0:
+                    raise ValueError("Count must be non-negative")
+
+        class ValidatedList(DataModel):
+            items: List[ValidatedItem]
+
+        # Should work with valid data
+        data = ValidatedList(items=[
+            {"name": "Item1", "count": 5},
+            {"name": "Item2", "count": 10}
+        ])
+        assert len(data.items) == 2
+
+        # Should fail validation in nested objects
+        with pytest.raises(ValueError, match="Count must be non-negative"):
+            ValidatedList(items=[
+                {"name": "Item1", "count": 5},
+                {"name": "Item2", "count": -1}  # Invalid count
+            ])
+
+    def test_hierarchical_type_validation(self):
+        """Test type validation in hierarchical structures."""
+
+        class TypedItem(DataModel):
+            name: str
+            value: int
+
+        class TypedContainer(DataModel):
+            items: List[TypedItem]
+
+        # Should work with correct types
+        data = TypedContainer(items=[
+            {"name": "Item1", "value": 42}
+        ])
+        assert data.items[0].value == 42
+
+        # Should fail type validation in nested objects
+        with pytest.raises(TypeError, match="Field 'name' expected type.*str.*got int"):
+            TypedContainer(items=[
+                {"name": 123, "value": 42}  # Wrong type for name
+            ])
+
+    def test_roundtrip_hierarchical_consistency(self):
+        """Test that hierarchical dict -> model -> dict is consistent."""
+
+        class Person(DataModel):
+            name: str
+            age: int
+
+        class Team(DataModel):
+            name: str
+            members: List[Person]
+            leads: Dict[str, Person]
+
+        original_data = {
+            "name": "Development Team",
+            "members": [
+                {"name": "John", "age": 30},
+                {"name": "Jane", "age": 25}
+            ],
+            "leads": {
+                "tech": {"name": "Alice", "age": 35},
+                "design": {"name": "Bob", "age": 28}
+            }
+        }
+
+        # Convert to model and back
+        model = Team.from_dict(original_data)
+        result_data = model.to_dict()
+
+        assert result_data == original_data
 
 
 class TestAutoDataclass:
