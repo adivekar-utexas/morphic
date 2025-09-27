@@ -54,7 +54,7 @@ Morphic eliminates boilerplate code and provides elegant solutions for common Py
 
 - 🐛 [Report Issues](https://github.com/adivekar/morphic/issues)
 - 💬 [Discussions](https://github.com/adivekar/morphic/discussions)
-- 📖 [Documentation](https://adivekar.github.io/morphic/)
+- 📖 [Documentation](https://adivekar-utexas.github.io/morphic/)
 
 !!! tip "Pro Tip"
     Check out the [Registry System](user-guide/registry.md) guide to see how Morphic can streamline your class management patterns.

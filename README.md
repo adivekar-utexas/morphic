@@ -181,7 +181,7 @@ print(f"Company: {company.name}, Employees: {len(company.employees)}")
 
 ## Documentation
 
-Comprehensive documentation is available at [https://adivekar.github.io/morphic/](https://adivekar.github.io/morphic/)
+Comprehensive documentation is available at [https://adivekar-utexas.github.io/morphic/](https://adivekar-utexas.github.io/morphic/)
 
 ### Building Documentation Locally
 
@@ -199,10 +199,10 @@ The documentation will be available at http://localhost:8000
 
 ### Documentation Structure
 
-- **[User Guide](https://adivekar.github.io/morphic/user-guide/getting-started/)**: Comprehensive tutorials and examples
-- **[API Reference](https://adivekar.github.io/morphic/api/)**: Detailed API documentation generated from docstrings
-- **[Examples](https://adivekar.github.io/morphic/examples/)**: Real-world usage examples and patterns
-- **[Contributing](https://adivekar.github.io/morphic/contributing/)**: Guidelines for contributors
+- **[User Guide](https://adivekar-utexas.github.io/morphic/user-guide/getting-started/)**: Comprehensive tutorials and examples
+- **[API Reference](https://adivekar-utexas.github.io/morphic/api/)**: Detailed API documentation generated from docstrings
+- **[Examples](https://adivekar-utexas.github.io/morphic/examples/)**: Real-world usage examples and patterns
+- **[Contributing](https://adivekar-utexas.github.io/morphic/contributing/)**: Guidelines for contributors
 
 ## Development
 
@@ -262,7 +262,7 @@ Documentation is automatically deployed to GitHub Pages when changes are pushed 
 
 1. **Builds documentation** using MkDocs with Material theme
 2. **Generates API documentation** automatically from docstrings using mkdocstrings
-3. **Deploys to GitHub Pages** at https://adivekar.github.io/morphic/
+3. **Deploys to GitHub Pages** at https://adivekar-utexas.github.io/morphic/
 
 ## Performance
 
@@ -278,7 +278,7 @@ Morphic is optimized for production use:
 
 ## Contributing
 
-We welcome contributions! Please see our [Contributing Guide](https://adivekar.github.io/morphic/contributing/) for details on:
+We welcome contributions! Please see our [Contributing Guide](https://adivekar-utexas.github.io/morphic/contributing/) for details on:
 
 - Setting up the development environment
 - Running tests and quality checks

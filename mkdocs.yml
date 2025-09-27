@@ -1,10 +1,10 @@
 site_name: Morphic Documentation
 site_description: Dynamic Python utilities for class registration, creation, and type checking
 site_author: Abhishek Divekar
-site_url: https://adivekar.github.io/morphic/
+site_url: https://adivekar-utexas.github.io/morphic/
 
-repo_name: adivekar/morphic
-repo_url: https://github.com/adivekar/morphic
+repo_name: adivekar-utexas/morphic
+repo_url: https://github.com/adivekar-utexas/morphic
 edit_uri: edit/main/docs/
 
 nav:
