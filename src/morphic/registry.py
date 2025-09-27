@@ -538,7 +538,11 @@ class Registry(ABC):
                 if class_key is None:
                     continue
                 elif isinstance(class_key, str):
-                    if _str_normalize(class_key) == _str_normalize(registry_key) if isinstance(registry_key, str) else False:
+                    if (
+                        _str_normalize(class_key) == _str_normalize(registry_key)
+                        if isinstance(registry_key, str)
+                        else False
+                    ):
                         return cls
                 elif isinstance(class_key, tuple) and isinstance(registry_key, tuple):
                     normalized_class_key = tuple(
@@ -560,7 +564,8 @@ class Registry(ABC):
             search_key = _str_normalize(registry_key)
         elif isinstance(registry_key, tuple):
             search_key = tuple(
-                _str_normalize(key_part) if isinstance(key_part, str) else key_part for key_part in registry_key
+                _str_normalize(key_part) if isinstance(key_part, str) else key_part
+                for key_part in registry_key
             )
         else:
             search_key = registry_key
@@ -903,13 +908,17 @@ class Registry(ABC):
         """
         # Prevent calling 'of' directly on Registry class
         if cls is Registry:
-            raise TypeError("The 'of' factory method cannot be called directly on Registry class. "
-                          "It must be called on a subclass of Registry.")
+            raise TypeError(
+                "The 'of' factory method cannot be called directly on Registry class. "
+                "It must be called on a subclass of Registry."
+            )
 
         # Ensure this is called on a Registry subclass
         if not issubclass(cls, Registry):
-            raise TypeError(f"The 'of' method can only be called on Registry subclasses, "
-                          f"but {cls.__name__} is not a Registry subclass.")
+            raise TypeError(
+                f"The 'of' method can only be called on Registry subclasses, "
+                f"but {cls.__name__} is not a Registry subclass."
+            )
 
         # Handle case where no registry_key is provided
         if registry_key is None:
@@ -918,8 +927,10 @@ class Registry(ABC):
                 return cls(*args, **kwargs)
             else:
                 # Abstract class without registry_key - cannot instantiate
-                raise TypeError(f"Cannot instantiate abstract class '{cls.__name__}' without specifying "
-                              f"a registry_key to identify which subclass to create.")
+                raise TypeError(
+                    f"Cannot instantiate abstract class '{cls.__name__}' without specifying "
+                    f"a registry_key to identify which subclass to create."
+                )
 
         # Use hierarchical lookup to find the subclass
         subclass = cls._get_hierarchical_subclass(registry_key)
@@ -935,21 +946,25 @@ class Registry(ABC):
             # Add subclasses
             for sub in cls.subclasses(keep_abstract=True):
                 available_classes.add(sub.__name__)
-                if hasattr(sub, 'aliases'):
+                if hasattr(sub, "aliases"):
                     available_classes.update(_as_list(sub.aliases))
 
             available_keys = sorted(available_classes)
-            raise KeyError(f'Could not find subclass of {cls.__name__} using registry_key: "{registry_key}" (type={type(registry_key)}). '
-                          f"Available keys in this hierarchy are: {available_keys}")
+            raise KeyError(
+                f'Could not find subclass of {cls.__name__} using registry_key: "{registry_key}" (type={type(registry_key)}). '
+                f"Available keys in this hierarchy are: {available_keys}"
+            )
 
         # Handle case where multiple subclasses are registered to the same registry_key
         if isinstance(subclass, list):
             if len(subclass) == 1:
                 subclass = subclass[0]
             else:
-                raise TypeError(f"Cannot instantiate using registry_key '{registry_key}' because multiple subclasses "
-                              f"are registered: {[sc.__name__ for sc in subclass]}. "
-                              f"Use a more specific registry_key to select a single subclass.")
+                raise TypeError(
+                    f"Cannot instantiate using registry_key '{registry_key}' because multiple subclasses "
+                    f"are registered: {[sc.__name__ for sc in subclass]}. "
+                    f"Use a more specific registry_key to select a single subclass."
+                )
 
         # Create and return instance
         return subclass(*args, **kwargs)

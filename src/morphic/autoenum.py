@@ -49,6 +49,7 @@ class alias(auto):
                     return object.__getattribute__(self, "value")
                 except Exception:
                     from enum import _auto_null
+
                     return _auto_null
             return self
         return object.__getattribute__(self, attr_name)

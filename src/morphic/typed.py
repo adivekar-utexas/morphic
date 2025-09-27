@@ -369,7 +369,6 @@ class Typed:
             # Some types (like subscripted generics) can't be used with isinstance
             pass
 
-
         # Handle AutoEnum conversion (if available in morphic)
         if hasattr(target_type, "__bases__"):
             try:
@@ -389,6 +388,7 @@ class Typed:
             # Handle standard Python enum types
             try:
                 import enum
+
                 if issubclass(target_type, enum.Enum):
                     if isinstance(value, str):
                         return target_type(value)
@@ -458,11 +458,14 @@ class Typed:
                 converted_list = []
                 for item in value:
                     if hasattr(item, "to_dict"):
-                        converted_list.append(item.to_dict(exclude_none=exclude_none, exclude_defaults=exclude_defaults))
+                        converted_list.append(
+                            item.to_dict(exclude_none=exclude_none, exclude_defaults=exclude_defaults)
+                        )
                     elif hasattr(item, "value"):
                         # Handle enums in lists
                         try:
                             from .autoenum import AutoEnum
+
                             if isinstance(item, AutoEnum):
                                 converted_list.append(str(item))
                             else:
@@ -477,11 +480,14 @@ class Typed:
                 converted_dict = {}
                 for k, v in value.items():
                     if hasattr(v, "to_dict"):
-                        converted_dict[k] = v.to_dict(exclude_none=exclude_none, exclude_defaults=exclude_defaults)
+                        converted_dict[k] = v.to_dict(
+                            exclude_none=exclude_none, exclude_defaults=exclude_defaults
+                        )
                     elif hasattr(v, "value"):
                         # Handle enums in dict values
                         try:
                             from .autoenum import AutoEnum
+
                             if isinstance(v, AutoEnum):
                                 converted_dict[k] = str(v)
                             else:
@@ -708,9 +714,7 @@ class Typed:
         if not hasattr(target_type, "__bases__"):
             return False
         try:
-            return any(
-                issubclass(base, Typed) for base in target_type.__bases__ if isinstance(base, type)
-            )
+            return any(issubclass(base, Typed) for base in target_type.__bases__ if isinstance(base, type))
         except TypeError:
             return False
 
@@ -743,7 +747,7 @@ class Typed:
             ```
         """
         # Get type hints directly from the class
-        if not hasattr(cls, '__annotations__'):
+        if not hasattr(cls, "__annotations__"):
             return
 
         annotations = cls.__annotations__
@@ -753,12 +757,14 @@ class Typed:
                 default_value = getattr(cls, field_name)
 
                 # Skip if this looks like a Field object or method
-                if hasattr(default_value, '__call__') or str(type(default_value)).startswith('<class \'dataclasses.'):
+                if hasattr(default_value, "__call__") or str(type(default_value)).startswith(
+                    "<class 'dataclasses."
+                ):
                     continue
 
                 try:
                     # Create a mock field object for conversion
-                    mock_field = type('MockField', (), {'type': field_type})()
+                    mock_field = type("MockField", (), {"type": field_type})()
 
                     # Try to convert the default value
                     converted_default = cls._convert_value(mock_field, default_value)
@@ -766,9 +772,13 @@ class Typed:
                     # Handle mutable defaults - convert to default_factory
                     # Include Typed objects as they are also mutable
                     is_mutable = isinstance(converted_default, (list, dict, set)) or (
-                        hasattr(converted_default, '__dict__') and
-                        hasattr(converted_default.__class__, '__bases__') and
-                        any(issubclass(base, Typed) for base in converted_default.__class__.__bases__ if isinstance(base, type))
+                        hasattr(converted_default, "__dict__")
+                        and hasattr(converted_default.__class__, "__bases__")
+                        and any(
+                            issubclass(base, Typed)
+                            for base in converted_default.__class__.__bases__
+                            if isinstance(base, type)
+                        )
                     )
 
                     if is_mutable:
@@ -784,7 +794,7 @@ class Typed:
                                     return value.copy()
                                 elif isinstance(value, set):
                                     return value.copy()
-                                elif hasattr(value, 'copy'):
+                                elif hasattr(value, "copy"):
                                     # For Typed objects that might have a copy method
                                     try:
                                         return value.copy()
@@ -793,9 +803,10 @@ class Typed:
                                         return value.__class__.from_dict(value.to_dict())
                                 else:
                                     # For other Typed objects, create new instance
-                                    if hasattr(value, 'to_dict') and hasattr(value.__class__, 'from_dict'):
+                                    if hasattr(value, "to_dict") and hasattr(value.__class__, "from_dict"):
                                         return value.__class__.from_dict(value.to_dict())
                                     return value
+
                             return factory
 
                         # Replace the class attribute with a field() using default_factory
@@ -970,15 +981,11 @@ class Typed:
 
 class ValidationError(ValueError):
     """Exception raised when function argument validation fails."""
+
     pass
 
 
-def validate(
-    func: Callable = None,
-    /,
-    *,
-    validate_return: bool = False
-) -> Callable:
+def validate(func: Callable = None, /, *, validate_return: bool = False) -> Callable:
     """Decorator that validates function arguments using type annotations.
 
     This decorator provides Pydantic-like validation for function arguments,
@@ -1052,10 +1059,7 @@ def validate(
         - Original function accessible via decorated_func.raw_function
     """
     # Fixed configuration with pydantic-compatible settings
-    config = {
-        'arbitrary_types_allowed': True,
-        'validate_default': True
-    }
+    config = {"arbitrary_types_allowed": True, "validate_default": True}
 
     def decorator(f: Callable) -> Callable:
         # Get function signature for parameter validation
@@ -1089,7 +1093,7 @@ def validate(
                     continue
 
                 # Create a mock field for the Typed conversion system
-                mock_field = type('MockField', (), {'type': param.annotation})()
+                mock_field = type("MockField", (), {"type": param.annotation})()
 
                 try:
                     # Use Typed's type conversion system
@@ -1107,9 +1111,7 @@ def validate(
                 except Exception as e:
                     if isinstance(e, ValidationError):
                         raise
-                    raise ValidationError(
-                        f"Failed to validate argument '{param_name}': {e}"
-                    ) from e
+                    raise ValidationError(f"Failed to validate argument '{param_name}': {e}") from e
 
             # Call the original function
             result = f(**validated_args)
@@ -1157,7 +1159,7 @@ def _validate_function_defaults(func: Callable, sig: inspect.Signature) -> None:
 
         try:
             # Create mock field for validation
-            mock_field = type('MockField', (), {'type': param.annotation})()
+            mock_field = type("MockField", (), {"type": param.annotation})()
 
             # Use stricter validation for default parameters
             converted_default = _convert_and_validate_default(mock_field, param.default, param.annotation)
@@ -1285,9 +1287,9 @@ def _convert_and_validate_default_single_type(value: Any, target_type: Type) -> 
             if target_type is bool and isinstance(value, str):
                 # Handle string to bool conversion more strictly
                 lower_val = value.lower()
-                if lower_val in ('true', '1', 'yes', 'on'):
+                if lower_val in ("true", "1", "yes", "on"):
                     return True
-                elif lower_val in ('false', '0', 'no', 'off', ''):
+                elif lower_val in ("false", "0", "no", "off", ""):
                     return False
                 else:
                     raise ValueError(f"Cannot convert '{value}' to bool")
