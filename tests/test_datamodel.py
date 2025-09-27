@@ -927,11 +927,13 @@ class TestHierarchicalTyping:
         ])
         assert data.items[0].value == 42
 
-        # Should fail type validation in nested objects
-        with pytest.raises(TypeError, match="Field 'name' expected type.*str.*got int"):
-            TypedContainer(items=[
-                {"name": 123, "value": 42}  # Wrong type for name
-            ])
+        # Should perform type conversion in nested objects
+        data = TypedContainer(items=[
+            {"name": 123, "value": 42}  # int should convert to str for name
+        ])
+        assert data.items[0].name == "123"
+        assert isinstance(data.items[0].name, str)
+        assert data.items[0].value == 42
 
     def test_roundtrip_hierarchical_consistency(self):
         """Test that hierarchical dict -> model -> dict is consistent."""
@@ -1299,20 +1301,26 @@ class TestTypeValidation:
         assert model.age == 30
         assert model.active is True
 
-    def test_basic_type_validation_failure(self):
-        """Test that wrong types fail validation."""
+    def test_basic_type_conversion_success(self):
+        """Test that compatible types are automatically converted."""
 
         class TypedModel(DataModel):
             name: str
             age: int
 
-        # Wrong type for name (str expected, got int)
-        with pytest.raises(TypeError, match="Field 'name' expected type.*str.*got int"):
-            TypedModel(name=123, age=30)
+        # Int should convert to str for name field
+        model1 = TypedModel(name=123, age=30)
+        assert model1.name == "123"
+        assert isinstance(model1.name, str)
+        assert model1.age == 30
+        assert isinstance(model1.age, int)
 
-        # Wrong type for age (int expected, got str)
-        with pytest.raises(TypeError, match="Field 'age' expected type.*int.*got str"):
-            TypedModel(name="John", age="30")
+        # Str should convert to int for age field
+        model2 = TypedModel(name="John", age="30")
+        assert model2.name == "John"
+        assert isinstance(model2.name, str)
+        assert model2.age == 30
+        assert isinstance(model2.age, int)
 
     def test_optional_field_validation(self):
         """Test validation with Optional fields."""
@@ -1379,8 +1387,13 @@ class TestTypeValidation:
         model = EnumDataModel(status=SimpleEnum.VALUE_A)
         assert model.status == SimpleEnum.VALUE_A
 
-        # Should fail with wrong type (str when enum expected)
-        with pytest.raises(TypeError, match="Field 'status' expected type.*SimpleEnum.*got str"):
+        # Should work with valid enum string conversion
+        model = EnumDataModel(status="VALUE_A")  # AutoEnum expects the name, not auto() value
+        assert model.status == SimpleEnum.VALUE_A
+        assert isinstance(model.status, SimpleEnum)
+
+        # Should fail with invalid enum string
+        with pytest.raises(ValueError, match="Could not find enum with value 'not_an_enum'"):
             EnumDataModel(status="not_an_enum")
 
     def test_nested_datamodel_validation(self):
@@ -1410,30 +1423,36 @@ class TestTypeValidation:
         model = CustomValidationModel(name="John", age=30)
         assert model.name == "John"
 
-        # Should fail on type validation before custom validation
-        with pytest.raises(TypeError, match="Field 'name' expected type.*str.*got int"):
-            CustomValidationModel(name=123, age=30)
+        # Type conversion should work, then custom validation is applied
+        model = CustomValidationModel(name=123, age=30)  # 123 converts to "123"
+        assert model.name == "123"
+        assert isinstance(model.name, str)
 
         # Should fail on custom validation after type validation passes
         with pytest.raises(ValueError, match="Age must be non-negative"):
             CustomValidationModel(name="John", age=-5)
 
-    def test_type_validation_from_dict_conversion(self):
-        """Test that from_dict still works with type conversion while constructor validates strictly."""
+    def test_consistent_type_conversion_behavior(self):
+        """Test that both from_dict and constructor perform consistent type conversion."""
 
         class ConversionModel(DataModel):
             name: str
             age: int
 
-        # from_dict should still do type conversion
-        model = ConversionModel.from_dict({"name": "John", "age": "30"})
-        assert model.name == "John"
-        assert model.age == 30  # Converted from string
-        assert isinstance(model.age, int)
+        # from_dict should do type conversion
+        model1 = ConversionModel.from_dict({"name": "John", "age": "30"})
+        assert model1.name == "John"
+        assert model1.age == 30  # Converted from string
+        assert isinstance(model1.age, int)
 
-        # But direct constructor should be strict about types
-        with pytest.raises(TypeError, match="Field 'age' expected type.*int.*got str"):
-            ConversionModel(name="John", age="30")  # String not auto-converted
+        # Constructor should also do type conversion (consistent behavior)
+        model2 = ConversionModel(name="John", age="30")  # String auto-converted
+        assert model2.name == "John"
+        assert model2.age == 30  # Converted from string
+        assert isinstance(model2.age, int)
+
+        # Both should produce the same result
+        assert model1.to_dict() == model2.to_dict()
 
 
 class TestNestedDataModelConversion:
@@ -1476,13 +1495,21 @@ class TestNestedDataModelConversion:
         assert model.user.name == "OnlyUser"
         assert model.metadata is None
 
-    def test_constructor_nested_validation_still_works(self):
-        """Test that nested objects still validate their own types strictly."""
-        # Type error in nested object should be caught
-        with pytest.raises(TypeError, match="Field 'name' expected type.*str.*got int"):
-            NestedDataModel(user={"name": 123, "age": 30})
+    def test_constructor_nested_conversion_works(self):
+        """Test that nested objects also perform automatic type conversion."""
+        # Type conversion should work in nested object
+        model = NestedDataModel(user={"name": 123, "age": 30})
+        assert model.user.name == "123"  # int converted to str
+        assert isinstance(model.user.name, str)
+        assert model.user.age == 30
 
-        # Type error in nested object's age field
+        # String to int conversion should work in nested age field
+        model = NestedDataModel(user={"name": "John", "age": "30"})
+        assert model.user.name == "John"
+        assert model.user.age == 30  # str converted to int
+        assert isinstance(model.user.age, int)
+
+        # Invalid conversion should still fail with type validation error
         with pytest.raises(TypeError, match="Field 'age' expected type.*int.*got str"):
             NestedDataModel(user={"name": "John", "age": "not_a_number"})
 
@@ -1499,15 +1526,19 @@ class TestNestedDataModelConversion:
         assert model.user.age == 30  # converted from string
         assert isinstance(model.user.age, int)
 
-    def test_constructor_vs_from_dict_behavior(self):
-        """Test the difference between constructor and from_dict behavior."""
-        # Constructor should be strict about types
-        with pytest.raises(TypeError):
-            NestedDataModel(user={"name": "John", "age": "30"})  # string age fails
+    def test_constructor_and_from_dict_consistent_behavior(self):
+        """Test that constructor and from_dict have consistent behavior."""
+        # Both constructor and from_dict should convert types consistently
+        model1 = NestedDataModel(user={"name": "John", "age": "30"})  # string age converts
+        assert model1.user.age == 30
+        assert isinstance(model1.user.age, int)
 
-        # from_dict should convert types
-        model = NestedDataModel.from_dict({"user": {"name": "John", "age": "30"}})
-        assert model.user.age == 30  # string converted to int
+        model2 = NestedDataModel.from_dict({"user": {"name": "John", "age": "30"}})
+        assert model2.user.age == 30  # string converted to int
+        assert isinstance(model2.user.age, int)
+
+        # Both should produce same result
+        assert model1.to_dict() == model2.to_dict()
 
     def test_deeply_nested_conversion(self):
         """Test conversion with deeply nested DataModel objects."""

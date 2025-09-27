@@ -332,7 +332,7 @@ class DataModel:
             # Handle List[DataModel] or similar list structures
             if origin_type is list:
                 type_args = get_args(target_type)
-                if type_args and isinstance(value, list):
+                if type_args and isinstance(value, (list, tuple)):
                     element_type = type_args[0]
                     # Convert each element if it's a DataModel type
                     if cls._is_datamodel_type(element_type):
@@ -382,6 +382,17 @@ class DataModel:
                         return target_type.from_str(value)
                     return value
             except ImportError:
+                pass
+
+            # Handle standard Python enum types
+            try:
+                import enum
+                if issubclass(target_type, enum.Enum):
+                    if isinstance(value, str):
+                        return target_type(value)
+                    return value
+            except (TypeError, ImportError):
+                # Not an enum or enum not available, continue with other checks
                 pass
 
             # Handle other enum types by looking for common enum characteristics
@@ -529,16 +540,16 @@ class DataModel:
         """Convert field values to appropriate types before validation.
 
         This enables automatic conversion of dictionaries to nested DataModel objects
-        in the regular constructor. Unlike from_dict(), this only converts nested
-        DataModel objects and enums, not basic types (to maintain strict validation).
+        and basic type conversion (like string to int) in the regular constructor.
+        This makes the constructor behavior consistent with from_dict().
         """
         field_info = self._get_field_info()
 
         for field_name, field in field_info.items():
             current_value = getattr(self, field_name)
 
-            # Only convert if it could be a nested DataModel or enum, not basic types
-            converted_value = self._convert_value_strict(field, current_value)
+            # Use full conversion logic (same as from_dict)
+            converted_value = self._convert_value(field, current_value)
 
             # Update the field value if it was converted
             if converted_value is not current_value:
