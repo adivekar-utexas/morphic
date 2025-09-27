@@ -86,6 +86,10 @@ class DataModel:
         """Automatically cache field information for subclasses and apply dataclass transformation."""
         super().__init_subclass__(**kwargs)
 
+        # Validate and convert default values BEFORE applying dataclass transformation
+        # This ensures dataclass uses the converted values
+        cls._validate_and_convert_class_defaults()
+
         # Automatically apply dataclass transformation if not already applied
         if not hasattr(cls, "__dataclass_fields__"):
             # Import dataclass here to avoid circular imports
@@ -106,9 +110,10 @@ class DataModel:
                 if attr_name.startswith("__dataclass") and not hasattr(cls, attr_name):
                     setattr(cls, attr_name, getattr(dataclass_cls, attr_name))
 
-        # Cache field information
+        # Cache field information and validate default_factory after dataclass transformation
         if hasattr(cls, "__dataclass_fields__"):
             cls._field_cache[cls] = cls.__dataclass_fields__
+            cls._validate_default_factories()
 
     def __post_init__(self) -> None:
         """Automatically called after dataclass initialization to run validation."""
@@ -546,6 +551,108 @@ class DataModel:
             )
         except TypeError:
             return False
+
+    @classmethod
+    def _validate_and_convert_class_defaults(cls) -> None:
+        """Validate and potentially convert default values before dataclass transformation."""
+        # Get type hints directly from the class
+        if not hasattr(cls, '__annotations__'):
+            return
+
+        annotations = cls.__annotations__
+        for field_name, field_type in annotations.items():
+            # Check if there's a class attribute with a default value
+            if hasattr(cls, field_name):
+                default_value = getattr(cls, field_name)
+
+                # Skip if this looks like a Field object or method
+                if hasattr(default_value, '__call__') or str(type(default_value)).startswith('<class \'dataclasses.'):
+                    continue
+
+                try:
+                    # Create a mock field object for conversion
+                    mock_field = type('MockField', (), {'type': field_type})()
+
+                    # Try to convert the default value
+                    converted_default = cls._convert_value(mock_field, default_value)
+
+                    # Handle mutable defaults - convert to default_factory
+                    # Include DataModel objects as they are also mutable
+                    is_mutable = isinstance(converted_default, (list, dict, set)) or (
+                        hasattr(converted_default, '__dict__') and
+                        hasattr(converted_default.__class__, '__bases__') and
+                        any(issubclass(base, DataModel) for base in converted_default.__class__.__bases__ if isinstance(base, type))
+                    )
+
+                    if is_mutable:
+                        # Import field here to avoid circular imports
+                        from dataclasses import field
+
+                        # Create a factory function that returns a copy of the converted default
+                        def make_factory(value):
+                            def factory():
+                                if isinstance(value, list):
+                                    return value.copy()
+                                elif isinstance(value, dict):
+                                    return value.copy()
+                                elif isinstance(value, set):
+                                    return value.copy()
+                                elif hasattr(value, 'copy'):
+                                    # For DataModel objects that might have a copy method
+                                    try:
+                                        return value.copy()
+                                    except (AttributeError, TypeError):
+                                        # If copy fails, create a new instance from dict
+                                        return value.__class__.from_dict(value.to_dict())
+                                else:
+                                    # For other DataModel objects, create new instance
+                                    if hasattr(value, 'to_dict') and hasattr(value.__class__, 'from_dict'):
+                                        return value.__class__.from_dict(value.to_dict())
+                                    return value
+                            return factory
+
+                        # Replace the class attribute with a field() using default_factory
+                        setattr(cls, field_name, field(default_factory=make_factory(converted_default)))
+                    else:
+                        # Update the class attribute with the converted value for immutable types
+                        if converted_default is not default_value:
+                            setattr(cls, field_name, converted_default)
+
+                    # Basic type validation - create temp instance for validation methods
+                    temp_instance = object.__new__(cls)
+                    temp_instance._DataModel__dict = {}  # Initialize to avoid AttributeError
+
+                    # Special handling for None values with Optional types
+                    if converted_default is None and temp_instance._type_allows_none(field_type):
+                        # None is valid for Optional types, skip validation
+                        pass
+                    elif not temp_instance._is_value_valid_for_type(converted_default, field_type):
+                        raise TypeError(
+                            f"Default value for field '{field_name}' in class '{cls.__name__}' "
+                            f"expected type {field_type}, got {type(converted_default).__name__} "
+                            f"with value {converted_default!r}"
+                        )
+                except Exception as e:
+                    # Re-raise with more context
+                    raise TypeError(
+                        f"Invalid default value for field '{field_name}' in class '{cls.__name__}': {e}"
+                    ) from e
+
+    @classmethod
+    def _validate_default_factories(cls) -> None:
+        """Validate default_factory values after dataclass transformation."""
+        if cls not in cls._field_cache:
+            return
+
+        field_info = cls._field_cache[cls]
+        for field_name, field in field_info.items():
+            # Check default_factory values
+            if field.default_factory is not MISSING:
+                if not callable(field.default_factory):
+                    raise TypeError(
+                        f"default_factory for field '{field_name}' in class '{cls.__name__}' "
+                        f"must be callable, got {type(field.default_factory).__name__}"
+                    )
 
     def _validate_types(self) -> None:
         """Validate that all field values match their type annotations."""

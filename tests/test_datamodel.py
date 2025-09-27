@@ -964,6 +964,228 @@ class TestHierarchicalTyping:
         assert result_data == original_data
 
 
+class TestDefaultValueValidation:
+    """Test validation and conversion of default values at class definition time."""
+
+    def test_valid_default_values_pass(self):
+        """Test that valid default values are accepted."""
+
+        class ValidDefaultsModel(DataModel):
+            name: str = "default_name"
+            age: int = 25
+            active: bool = True
+            score: float = 85.5
+
+        # Should create class successfully
+        model = ValidDefaultsModel()
+        assert model.name == "default_name"
+        assert model.age == 25
+        assert model.active is True
+        assert model.score == 85.5
+
+    def test_convertible_default_values_are_converted(self):
+        """Test that default values are automatically converted to the correct type."""
+
+        class ConvertibleDefaultsModel(DataModel):
+            age: int = "25"  # String that can convert to int
+            score: float = "85.5"  # String that can convert to float
+            active: bool = "true"  # String that can convert to bool
+
+        # Should create class successfully with converted defaults
+        model = ConvertibleDefaultsModel()
+        assert model.age == 25  # Converted from string
+        assert isinstance(model.age, int)
+        assert model.score == 85.5  # Converted from string
+        assert isinstance(model.score, float)
+        # Note: "true" as a non-empty string is truthy, so bool("true") = True
+        assert model.active is True
+        assert isinstance(model.active, bool)
+
+    def test_invalid_default_values_raise_error_at_class_definition(self):
+        """Test that invalid default values raise errors at class definition time."""
+
+        # Invalid string default for int field
+        with pytest.raises(TypeError, match="Invalid default value for field 'age'"):
+            class InvalidIntDefaultModel(DataModel):
+                age: int = "not_a_number"  # Can't convert to int
+
+        # Invalid type that can't be converted
+        with pytest.raises(TypeError, match="Invalid default value for field 'items'"):
+            class InvalidListDefaultModel(DataModel):
+                items: list = "not_a_list"  # Can't convert string to list
+
+    def test_hierarchical_default_values_conversion(self):
+        """Test that hierarchical default values are properly converted."""
+
+        class Address(DataModel):
+            street: str
+            city: str
+
+        class PersonWithAddressDefault(DataModel):
+            name: str = "John"
+            # Default address as dict that should convert to Address object
+            address: Address = {"street": "123 Main St", "city": "Anytown"}
+
+        model = PersonWithAddressDefault()
+        assert model.name == "John"
+        assert isinstance(model.address, Address)
+        assert model.address.street == "123 Main St"
+        assert model.address.city == "Anytown"
+
+    def test_list_default_values_conversion(self):
+        """Test that list default values with DataModel elements are converted."""
+
+        class Contact(DataModel):
+            name: str
+            email: str
+
+        class ContactListModel(DataModel):
+            # Default list of contacts as dicts that should convert to Contact objects
+            contacts: List[Contact] = [
+                {"name": "John", "email": "john@example.com"},
+                {"name": "Jane", "email": "jane@example.com"}
+            ]
+
+        model = ContactListModel()
+        assert len(model.contacts) == 2
+        assert all(isinstance(contact, Contact) for contact in model.contacts)
+        assert model.contacts[0].name == "John"
+        assert model.contacts[1].name == "Jane"
+
+    def test_dict_default_values_conversion(self):
+        """Test that dict default values with DataModel elements are converted."""
+
+        class User(DataModel):
+            name: str
+            role: str
+
+        class UserDictModel(DataModel):
+            # Default dict of users that should convert to User objects
+            users: Dict[str, User] = {
+                "admin": {"name": "Admin User", "role": "admin"},
+                "guest": {"name": "Guest User", "role": "guest"}
+            }
+
+        model = UserDictModel()
+        assert len(model.users) == 2
+        assert all(isinstance(user, User) for user in model.users.values())
+        assert model.users["admin"].name == "Admin User"
+        assert model.users["guest"].role == "guest"
+
+    def test_optional_default_values_with_none(self):
+        """Test that Optional fields with None defaults work correctly."""
+
+        class OptionalModel(DataModel):
+            required: str
+            optional_str: Optional[str] = None
+            optional_int: Optional[int] = None
+
+        model = OptionalModel(required="test")
+        assert model.required == "test"
+        assert model.optional_str is None
+        assert model.optional_int is None
+
+    def test_union_default_values_conversion(self):
+        """Test that Union type default values are handled correctly."""
+
+        class UnionDefaultModel(DataModel):
+            value: Union[int, str] = "42"  # Should try int first, convert to int
+            mixed: Union[str, int] = 42    # Should try str first, keep as int if str conversion fails
+
+        model = UnionDefaultModel()
+        # The conversion behavior depends on the order of types in Union
+        # and how our conversion logic handles it
+        assert model.value == 42 or model.value == "42"  # Either conversion is valid
+        assert model.mixed == 42 or model.mixed == "42"   # Either conversion is valid
+
+    def test_default_factory_validation(self):
+        """Test that default_factory values are validated to be callable."""
+
+        # Valid default factory
+        class ValidFactoryModel(DataModel):
+            items: list = field(default_factory=list)
+            data: dict = field(default_factory=dict)
+
+        model = ValidFactoryModel()
+        assert model.items == []
+        assert model.data == {}
+
+        # Invalid default factory (not callable)
+        with pytest.raises(TypeError, match="default_factory.*must be callable"):
+            class InvalidFactoryModel(DataModel):
+                items: list = field(default_factory="not_callable")  # Not callable
+
+    def test_enum_default_values_conversion(self):
+        """Test that enum default values are properly handled."""
+
+        class EnumDefaultModel(DataModel):
+            status: SimpleEnum = "VALUE_A"  # String that should convert to enum
+
+        model = EnumDefaultModel()
+        assert model.status == SimpleEnum.VALUE_A
+        assert isinstance(model.status, SimpleEnum)
+
+    def test_deeply_nested_default_conversion(self):
+        """Test conversion of deeply nested default structures."""
+
+        class Item(DataModel):
+            name: str
+            value: int
+
+        class Category(DataModel):
+            name: str
+            items: List[Item]
+
+        class Inventory(DataModel):
+            # Complex nested default structure
+            categories: Dict[str, Category] = {
+                "electronics": {
+                    "name": "Electronics",
+                    "items": [
+                        {"name": "Phone", "value": 500},
+                        {"name": "Laptop", "value": 1000}
+                    ]
+                },
+                "books": {
+                    "name": "Books",
+                    "items": [
+                        {"name": "Python Guide", "value": 50}
+                    ]
+                }
+            }
+
+        model = Inventory()
+        assert len(model.categories) == 2
+        assert isinstance(model.categories["electronics"], Category)
+        assert len(model.categories["electronics"].items) == 2
+        assert isinstance(model.categories["electronics"].items[0], Item)
+        assert model.categories["electronics"].items[0].name == "Phone"
+        assert model.categories["books"].items[0].value == 50
+
+    def test_default_value_validation_with_custom_validation(self):
+        """Test that default values pass custom validation methods."""
+
+        class ValidatedDefaultModel(DataModel):
+            count: int = 5  # Valid default
+
+            def validate(self):
+                if self.count < 0:
+                    raise ValueError("Count must be non-negative")
+
+        # Should work fine with valid default
+        model = ValidatedDefaultModel()
+        assert model.count == 5
+
+        # Test that invalid defaults would be caught
+        with pytest.raises(TypeError, match="Invalid default value"):
+            class InvalidValidatedDefaultModel(DataModel):
+                count: int = "invalid"  # Will fail conversion and validation
+
+                def validate(self):
+                    if self.count < 0:
+                        raise ValueError("Count must be non-negative")
+
+
 class TestAutoDataclass:
     """Test automatic dataclass transformation."""
 
