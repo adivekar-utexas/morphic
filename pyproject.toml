@@ -1,0 +1,103 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "morphic"
+dynamic = ["version"]
+authors = [
+    { name = "Abhishek Divekar", email = "adivekar@utexas.edu" }
+]
+description = "Dynamic Python utilities for class registration, creation, and type checking"
+readme = "README.md"
+requires-python = ">=3.10.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Utilities",
+]
+license-files = ["LICENSE"]
+dependencies = [
+    "typing-extensions>=4.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+    "pydantic>=2.0.0",
+]
+docs = [
+    "mkdocs>=1.6.0",
+    "mkdocs-material>=9.5.0",
+    "mkdocstrings[python]>=0.24.0",
+    "mike>=2.0.0",
+]
+all = [
+    "morphic[dev,docs]",
+]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "--cov=morphic --cov-report=term-missing --cov-report=html"
+
+[tool.ruff]
+line-length = 110
+fix = true
+force-exclude = true
+target-version = "py310"
+
+[tool.ruff.lint]
+fixable = [
+    "I",    # Add all rules under isort linter: https://docs.astral.sh/ruff/rules/#isort-i
+    "W",    # Add all rules under whitespace: https://docs.astral.sh/ruff/rules/#warning-w
+    "E401", # multiple-imports-on-one-line: https://docs.astral.sh/ruff/rules/multiple-imports-on-one-line/
+    "E713", # not-in-test: https://docs.astral.sh/ruff/rules/not-in-test/
+    "E721", # type-comparison: https://docs.astral.sh/ruff/rules/type-comparison/
+    "E722", # bare-except: https://docs.astral.sh/ruff/rules/bare-except/
+    "F401", # unused-import: https://docs.astral.sh/ruff/rules/unused-import/
+    "F541", # f-string-missing-placeholders: https://docs.astral.sh/ruff/rules/f-string-missing-placeholders/
+    "F811", # redefined-while-unused: https://docs.astral.sh/ruff/rules/redefined-while-unused/
+    "F841", # unused-variable: https://docs.astral.sh/ruff/rules/unused-variable/
+]
+ignore = [
+    ## Ignored because it makes the code too verbose:
+    "E731", # lambda-assignment: https://docs.astral.sh/ruff/rules/lambda-assignment/
+    "E741", # ambiguous-variable-name: https://docs.astral.sh/ruff/rules/ambiguous-variable-name/
+    
+    ## Ignored because it causes no harm (and is needed sometimes):
+    "F841",     # unused-variable: https://docs.astral.sh/ruff/rules/unused-variable/
+]
+
+[tool.black]
+line-length = 110
+target-version = ["py310", "py311", "py312"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
