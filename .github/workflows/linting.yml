@@ -1,0 +1,24 @@
+name: Linting
+
+on: [push, pull_request]
+
+jobs:
+  ruff-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/ruff-action@v1
+        with:
+          args: check --diff
+          src: './src'
+
+  ruff-format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/ruff-action@v1
+        with:
+          args: format --check
+          src: './src'
