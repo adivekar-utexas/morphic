@@ -210,6 +210,65 @@ class Registry(ABC):
         return available_subclasses
 
     @classmethod
+    def _get_hierarchical_subclass(cls, registry_key: Any) -> Optional[Union[Type, List[Type]]]:
+        """
+        Get subclass by registry_key, but only search within the hierarchy of the calling class.
+
+        For concrete classes, this can return the class itself if the registry_key matches.
+        For abstract classes, this searches only within direct and indirect subclasses.
+        """
+        # If the class is concrete (not abstract) and registry_key matches the class name or aliases
+        if not _is_abstract(cls):
+            # Check if registry_key matches this concrete class
+            class_keys = [cls.__name__] + _as_list(cls.aliases) + _as_list(cls._registry_keys())
+
+            for class_key in class_keys:
+                if class_key is None:
+                    continue
+                elif isinstance(class_key, str):
+                    if _str_normalize(class_key) == _str_normalize(registry_key) if isinstance(registry_key, str) else False:
+                        return cls
+                elif isinstance(class_key, tuple) and isinstance(registry_key, tuple):
+                    normalized_class_key = tuple(
+                        _str_normalize(k) if isinstance(k, str) else k for k in class_key
+                    )
+                    normalized_registry_key = tuple(
+                        _str_normalize(k) if isinstance(k, str) else k for k in registry_key
+                    )
+                    if normalized_class_key == normalized_registry_key:
+                        return cls
+                elif class_key == registry_key:
+                    return cls
+
+        # Search in registry but filter to only subclasses of cls
+        matching_subclasses = {}
+
+        # Normalize the search key
+        if isinstance(registry_key, str):
+            search_key = _str_normalize(registry_key)
+        elif isinstance(registry_key, tuple):
+            search_key = tuple(
+                _str_normalize(key_part) if isinstance(key_part, str) else key_part for key_part in registry_key
+            )
+        else:
+            search_key = registry_key
+
+        # Look through registry for matching keys
+        registry_entry = cls._registry.get(search_key)
+        if registry_entry:
+            # Filter to only include subclasses of cls
+            for subclass_name, subclass in registry_entry.items():
+                if isinstance(subclass, type) and issubclass(subclass, cls) and subclass != cls:
+                    matching_subclasses[subclass_name] = subclass
+
+        if not matching_subclasses:
+            return None
+
+        if len(matching_subclasses) == 1:
+            return next(iter(matching_subclasses.values()))
+        return list(matching_subclasses.values())
+
+    @classmethod
     def remove_subclass(cls, subclass: Union[Type, str]):
         """Remove a subclass from the registry."""
         name = subclass if isinstance(subclass, str) else subclass.__name__
@@ -232,3 +291,118 @@ class Registry(ABC):
     def _registry_keys(cls) -> Optional[Union[List[Any], Any]]:
         """Override in subclasses to provide additional registry keys."""
         return None
+
+    @classmethod
+    def of(cls, registry_key: Any = None, *args, **kwargs):
+        """
+        Hierarchical factory method to create instances of registered subclasses.
+
+        This method works hierarchically:
+        1. If called on a concrete (non-abstract) class without a registry_key, it instantiates that class directly
+        2. If called on a concrete class with a registry_key that matches the class, it instantiates that class
+        3. If called on an abstract class, it searches only within its subclass hierarchy
+        4. If called on any class with a registry_key, it performs hierarchical lookup within the class's subtree
+
+        Args:
+            registry_key: Optional key to look up subclass (class name, alias, tuple key, etc.).
+                         If None and the class is concrete, instantiates the class directly.
+            *args: Positional arguments to pass to the subclass constructor
+            **kwargs: Keyword arguments to pass to the subclass constructor
+
+        Returns:
+            Instance of the found subclass or the class itself
+
+        Raises:
+            TypeError: If called directly on Registry class, or if registry_key is required but not provided
+            KeyError: If the registry_key is not found in the class hierarchy
+
+        Examples:
+            ```python
+            class Animal(Registry, ABC):
+                @abstractmethod
+                def speak(self) -> str:
+                    pass
+
+            class Cat(Animal, ABC):  # Abstract intermediate class
+                pass
+
+            class TabbyCat(Cat):
+                def __init__(self, name="Tabby"):
+                    self.name = name
+                def speak(self) -> str:
+                    return f"{self.name} the tabby says Meow!"
+
+            class OrangeCat(Cat):
+                def __init__(self, name="Orange"):
+                    self.name = name
+                def speak(self) -> str:
+                    return f"{self.name} the orange cat says Meow!"
+
+            class Dog(Animal):  # Concrete class
+                def __init__(self, name="Buddy"):
+                    self.name = name
+                def speak(self) -> str:
+                    return f"{self.name} says Woof!"
+
+            # Hierarchical usage:
+            dog = Dog.of()  # Direct instantiation of concrete class
+            dog = Dog.of("Dog")  # Also works with key matching class name
+
+            tabby = Cat.of("TabbyCat")  # Abstract class looks only in its subclasses
+            orange = Cat.of("OrangeCat")  # Only TabbyCat and OrangeCat are accessible
+
+            # This would fail - Cat.of("Dog") because Dog is not a subclass of Cat
+            ```
+        """
+        # Prevent calling 'of' directly on Registry class
+        if cls is Registry:
+            raise TypeError("The 'of' factory method cannot be called directly on Registry class. "
+                          "It must be called on a subclass of Registry.")
+
+        # Ensure this is called on a Registry subclass
+        if not issubclass(cls, Registry):
+            raise TypeError(f"The 'of' method can only be called on Registry subclasses, "
+                          f"but {cls.__name__} is not a Registry subclass.")
+
+        # Handle case where no registry_key is provided
+        if registry_key is None:
+            if not _is_abstract(cls):
+                # Concrete class without registry_key - instantiate directly
+                return cls(*args, **kwargs)
+            else:
+                # Abstract class without registry_key - cannot instantiate
+                raise TypeError(f"Cannot instantiate abstract class '{cls.__name__}' without specifying "
+                              f"a registry_key to identify which subclass to create.")
+
+        # Use hierarchical lookup to find the subclass
+        subclass = cls._get_hierarchical_subclass(registry_key)
+
+        if subclass is None:
+            # Build error message showing available keys in this hierarchy
+            available_classes = set()
+
+            # If concrete, the class itself is available
+            if not _is_abstract(cls):
+                available_classes.add(cls.__name__)
+
+            # Add subclasses
+            for sub in cls.subclasses(keep_abstract=True):
+                available_classes.add(sub.__name__)
+                if hasattr(sub, 'aliases'):
+                    available_classes.update(_as_list(sub.aliases))
+
+            available_keys = sorted(available_classes)
+            raise KeyError(f'Could not find subclass of {cls.__name__} using registry_key: "{registry_key}" (type={type(registry_key)}). '
+                          f"Available keys in this hierarchy are: {available_keys}")
+
+        # Handle case where multiple subclasses are registered to the same registry_key
+        if isinstance(subclass, list):
+            if len(subclass) == 1:
+                subclass = subclass[0]
+            else:
+                raise TypeError(f"Cannot instantiate using registry_key '{registry_key}' because multiple subclasses "
+                              f"are registered: {[sc.__name__ for sc in subclass]}. "
+                              f"Use a more specific registry_key to select a single subclass.")
+
+        # Create and return instance
+        return subclass(*args, **kwargs)
