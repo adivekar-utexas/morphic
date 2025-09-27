@@ -19,17 +19,29 @@ class DataModel:
     - Automatic nested DataModel conversion in constructor
     - Automatic validation after instance creation
     - Automatic type conversion from dictionaries
+    - **Default value validation and conversion at class definition time**
+    - **Automatic mutable default handling with default_factory**
+    - **Hierarchical default value conversion (nested DataModels, lists, dicts)**
     - AutoEnum string conversion with fuzzy matching and aliases (if morphic.AutoEnum is available)
     - Nested object support with validation
     - Serialization/deserialization with filtering options
     - Field caching for performance
     - Copy with modifications
 
-    Example:
-        ```python
-        from morphic import DataModel
+    Default Value Features:
+    - Default values are validated and converted at class definition time
+    - Invalid defaults raise clear errors when the class is defined
+    - Convertible defaults are automatically transformed (e.g., "25" -> 25 for int fields)
+    - Mutable defaults (lists, dicts, DataModel objects) are automatically converted to default_factory
+    - Hierarchical structures in defaults are recursively converted
+    - Supports Optional fields, Union types, and complex nested structures
 
-        # No @dataclass decorator needed!
+    Basic Usage Examples:
+        ```python
+        from morphic import DataModel, AutoEnum, alias
+        from typing import List, Dict, Optional, Union
+
+        # Simple dataclass with automatic validation
         class User(DataModel):
             name: str
             age: int
@@ -40,43 +52,169 @@ class DataModel:
                     raise ValueError("Age must be non-negative")
 
         # Validation happens automatically during creation
-        user = User(name="John", age=30)  # Type and custom validation called
+        user = User(name="John", age=30)
+        print(user.name, user.age, user.active)  # John 30 True
 
-        # Type validation catches type mismatches
+        # Type validation catches mismatches immediately
         try:
             User(name=123, age=30)  # Raises TypeError - name must be str
-        except TypeError:
-            print("Type validation failed!")
+        except TypeError as e:
+            print(f"Type error: {e}")
 
-        # Also works with from_dict (with type conversion)
-        user = User.from_dict({"name": "John", "age": "30"})  # "30" converted to int
+        # from_dict with automatic type conversion
+        user = User.from_dict({"name": "John", "age": "30"})  # "30" -> int(30)
+        assert user.age == 30 and isinstance(user.age, int)
 
-        # Invalid data raises validation error immediately
+        # Custom validation runs after type validation
         try:
-            User(name="John", age=-5)  # Raises ValueError from custom validation
-        except ValueError:
-            print("Custom validation failed!")
+            User(name="John", age=-5)  # Raises ValueError from validate()
+        except ValueError as e:
+            print(f"Validation error: {e}")
+        ```
 
-        # Nested DataModel support - automatic dict-to-object conversion
+    Advanced Examples:
+        ```python
+        # Nested DataModel objects with automatic conversion
         class Address(DataModel):
             street: str
             city: str
+            zip_code: str = "00000"
 
-        class Person(DataModel):
+        class Company(DataModel):
             name: str
             address: Address
+            employees: List[str] = []
 
-        # Constructor automatically converts dict to Address object
-        person = Person(name="John", address={"street": "123 Main St", "city": "NYC"})
-        assert isinstance(person.address, Address)
-        assert person.address.street == "123 Main St"
+        # Dict automatically converted to Address object
+        company = Company(
+            name="Tech Corp",
+            address={"street": "123 Main St", "city": "NYC", "zip_code": "10001"}
+        )
+        assert isinstance(company.address, Address)
+        assert company.address.street == "123 Main St"
 
-        # Type validation works on nested objects too
-        try:
-            Person(name="John", address={"street": 123, "city": "NYC"})  # street must be str
-        except TypeError:
-            print("Nested validation caught type error!")
+        # Works with from_dict too
+        company_data = {
+            "name": "Tech Corp",
+            "address": {"street": "456 Oak Ave", "city": "SF"},
+            "employees": ["Alice", "Bob", "Charlie"]
+        }
+        company2 = Company.from_dict(company_data)
+        assert company2.address.zip_code == "00000"  # Default value
+
+        # Complex nested structures
+        class Project(DataModel):
+            name: str
+            team_lead: User
+            members: List[User]
+            settings: Dict[str, Union[str, int]]
+
+        project = Project.from_dict({
+            "name": "Alpha Project",
+            "team_lead": {"name": "Alice", "age": 30},
+            "members": [
+                {"name": "Bob", "age": 25},
+                {"name": "Charlie", "age": 28}
+            ],
+            "settings": {"priority": "high", "budget": 50000}
+        })
+
+        assert isinstance(project.team_lead, User)
+        assert all(isinstance(member, User) for member in project.members)
+        assert project.settings["budget"] == 50000
         ```
+
+    Default Value Validation Examples:
+        ```python
+        # Basic default value conversion
+        class Config(DataModel):
+            port: int = "8080"        # String automatically converted to int
+            debug: bool = "true"      # String automatically converted to bool
+            timeout: float = "30.5"   # String automatically converted to float
+
+        config = Config()
+        assert config.port == 8080    # Converted to int
+        assert isinstance(config.port, int)
+
+        # Invalid defaults caught at class definition time
+        try:
+            class BadConfig(DataModel):
+                count: int = "not_a_number"  # Raises TypeError immediately
+        except TypeError as e:
+            print(f"Invalid default caught: {e}")
+
+        # Hierarchical default conversion
+        class Contact(DataModel):
+            name: str
+            email: str
+
+        class ContactList(DataModel):
+            # Dict converted to Contact object automatically
+            primary: Contact = {"name": "Admin", "email": "admin@example.com"}
+
+            # List of dicts converted to list of Contact objects
+            contacts: List[Contact] = [
+                {"name": "John", "email": "john@example.com"},
+                {"name": "Jane", "email": "jane@example.com"}
+            ]
+
+            # Dict of dicts converted to dict of Contact objects
+            by_role: Dict[str, Contact] = {
+                "admin": {"name": "Administrator", "email": "admin@company.com"},
+                "user": {"name": "Regular User", "email": "user@company.com"}
+            }
+
+        # All defaults are properly converted and validated
+        contacts = ContactList()
+        assert isinstance(contacts.primary, Contact)
+        assert isinstance(contacts.contacts[0], Contact)
+        assert isinstance(contacts.by_role["admin"], Contact)
+
+        # Each instance gets its own copy of mutable defaults
+        contacts2 = ContactList()
+        contacts.contacts.append(Contact(name="New", email="new@example.com"))
+        assert len(contacts.contacts) == 3   # Modified
+        assert len(contacts2.contacts) == 2  # Unchanged
+
+        # Optional fields with proper None handling
+        class OptionalConfig(DataModel):
+            name: str
+            description: Optional[str] = None  # None is valid for Optional types
+            settings: Optional[Dict[str, str]] = None
+
+        config = OptionalConfig(name="test")
+        assert config.description is None
+        assert config.settings is None
+        ```
+
+    Error Handling:
+        Default value validation provides clear error messages that include:
+        - The class name where the error occurred
+        - The specific field name with the invalid default
+        - The expected type and actual type/value received
+        - Whether the error occurred during conversion or validation
+
+        ```python
+        # Example error message:
+        # TypeError: Invalid default value for field 'port' in class 'Config':
+        # Default value for field 'port' in class 'Config' expected type <class 'int'>,
+        # got str with value 'invalid_port_number'
+        ```
+
+    Performance and Best Practices:
+        - Default value validation occurs only once at class definition time
+        - Converted default values are cached and reused for all instances
+        - Mutable defaults are automatically handled to prevent shared state issues
+        - Use Optional[T] for fields that can legitimately be None
+        - Large or complex default structures are efficiently handled via default_factory
+        - Type conversion follows the same rules as from_dict() for consistency
+
+    Advanced Features:
+        - Supports Union types: Union[int, str] defaults try conversion in declaration order
+        - Handles deeply nested structures: Dict[str, List[DataModel]] with full conversion
+        - Integrates with custom validation: default values must pass validate() method
+        - Compatible with dataclass field() for advanced default_factory scenarios
+        - Works seamlessly with AutoEnum string conversion and aliases
     """
 
     # Class-level cache for field information
@@ -542,7 +680,18 @@ class DataModel:
 
     @classmethod
     def _is_datamodel_type(cls, target_type: Type) -> bool:
-        """Check if a type is a DataModel subclass."""
+        """Check if a type is a DataModel subclass.
+
+        Args:
+            target_type: The type to check
+
+        Returns:
+            True if target_type is a subclass of DataModel, False otherwise
+
+        Note:
+            This method safely handles types that may not be classes or may
+            not support isinstance/issubclass operations.
+        """
         if not hasattr(target_type, "__bases__"):
             return False
         try:
@@ -554,7 +703,32 @@ class DataModel:
 
     @classmethod
     def _validate_and_convert_class_defaults(cls) -> None:
-        """Validate and potentially convert default values before dataclass transformation."""
+        """Validate and convert default values at class definition time.
+
+        This method is called during class creation (in __init_subclass__) to:
+        1. Convert default values to appropriate types (e.g., "25" -> 25 for int fields)
+        2. Handle hierarchical defaults (convert dicts to DataModel objects)
+        3. Convert mutable defaults to default_factory to prevent shared mutable state
+        4. Validate that converted defaults comply with their type annotations
+        5. Provide clear error messages for invalid defaults
+
+        The validation happens before dataclass transformation to ensure that
+        dataclass receives properly typed default values.
+
+        Raises:
+            TypeError: If a default value cannot be converted or is invalid for its type
+
+        Examples:
+            ```python
+            class Config(DataModel):
+                port: int = "8080"  # Converted to int(8080)
+                users: List[User] = [{"name": "admin"}]  # Converted to default_factory
+
+            # Raises TypeError at class definition:
+            class BadConfig(DataModel):
+                count: int = "invalid"  # Cannot convert to int
+            ```
+        """
         # Get type hints directly from the class
         if not hasattr(cls, '__annotations__'):
             return
@@ -640,7 +814,20 @@ class DataModel:
 
     @classmethod
     def _validate_default_factories(cls) -> None:
-        """Validate default_factory values after dataclass transformation."""
+        """Validate default_factory callables after dataclass transformation.
+
+        This method ensures that all default_factory values are callable.
+        It's called after dataclass transformation because some default_factory
+        values may be created automatically during mutable default conversion.
+
+        Raises:
+            TypeError: If a default_factory is not callable
+
+        Note:
+            This validation cannot check the return type of default_factory
+            functions since they are called at instance creation time, not
+            class definition time.
+        """
         if cls not in cls._field_cache:
             return
 

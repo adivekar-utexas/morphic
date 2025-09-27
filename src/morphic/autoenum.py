@@ -63,20 +63,115 @@ _DEFAULT_REMOVAL_TABLE = str.maketrans(
 
 class AutoEnum(str, Enum):
     """
-    Ultra-fast AutoEnum with fuzzy matching and aliases.
+    Ultra-fast AutoEnum with fuzzy matching, aliases, and collection conversion.
 
-    Example:
+    AutoEnum provides powerful string-to-enum conversion with case-insensitive matching,
+    automatic normalization, and comprehensive alias support. Optimized for performance
+    with O(1) lookups and thread-safe initialization.
+
+    Features:
+    - **Ultra-fast lookups**: O(1) performance with cached normalization
+    - **Fuzzy matching**: Case-insensitive with space/dash/underscore normalization
+    - **Rich aliases**: Multiple aliases per enum member with fuzzy matching
+    - **Collection conversion**: Convert lists, dicts, and sets between strings and enums
+    - **Display names**: Human-readable formatting for UI display
+    - **Thread-safe**: Safe concurrent access and initialization
+    - **Type safety**: Full typing support with IDE integration
+
+    Basic Usage:
         ```python
-        from morphic import AutoEnum, alias
+        from morphic import AutoEnum, alias, auto
 
-        class Status(AutoEnum):
-            PENDING = alias("pending", "waiting", "queued")
-            RUNNING = alias("active", "in_progress")
-            COMPLETE = alias("done", "finished", "success")
+        class Priority(AutoEnum):
+            HIGH = alias("urgent", "critical", "high_priority")
+            MEDIUM = alias("normal", "standard", "medium_priority")
+            LOW = alias("minor", "low_priority")
 
-        # Fuzzy matching
-        status = Status.from_str("In Progress")  # Returns Status.RUNNING
-        status = Status.from_str("FINISHED")     # Returns Status.COMPLETE
+        # Direct string conversion with fuzzy matching
+        p1 = Priority("high")           # HIGH
+        p2 = Priority("URGENT")         # HIGH (alias, case insensitive)
+        p3 = Priority("high-priority")  # HIGH (fuzzy matching)
+        p4 = Priority("Normal")         # MEDIUM (alias, case insensitive)
+
+        # Safe conversion with error handling
+        p5 = Priority.from_str("invalid", raise_error=False)  # None
+        p6 = Priority.from_str("critical")                    # HIGH
+
+        # Check membership and matching
+        assert Priority.matches_any("urgent")         # True
+        assert Priority.HIGH.matches("CRITICAL")      # True
+        assert not Priority.matches_any("invalid")    # False
+        ```
+
+    Advanced Features:
+        ```python
+        # Collection conversion methods
+        status_strings = ["high", "normal", "urgent", "minor"]
+        statuses = Priority.convert_list(status_strings)
+        # Result: [Priority.HIGH, Priority.MEDIUM, Priority.HIGH, Priority.LOW]
+
+        # Dictionary key/value conversion
+        counts = {"high": 10, "normal": 25, "low": 5}
+        enum_counts = Priority.convert_keys(counts)
+        # Result: {Priority.HIGH: 10, Priority.MEDIUM: 25, Priority.LOW: 5}
+
+        # Display names for UI
+        for priority in Priority:
+            print(f"{priority}: {priority.display_name()}")
+        # Output:
+        # HIGH: High
+        # MEDIUM: Medium
+        # LOW: Low
+
+        # Custom display formatting
+        print(Priority.HIGH.display_name(sep="-"))  # "High"
+        print(Priority.display_names())             # ["High", "Medium", "Low"]
+
+        # Dynamic enum creation
+        Color = AutoEnum.create("Color", ["red", "green grass", "Blue33"])
+        red = Color("red")            # Color.Red
+        green = Color("green grass")  # Color.Green_Grass
+        blue = Color("Blue33")        # Color.Blue33
+
+        # Performance characteristics
+        # - 1M+ lookups per second with warm cache
+        # - Thread-safe initialization and access
+        # - Consistent O(1) performance regardless of enum size
+        ```
+
+    String Normalization:
+        AutoEnum automatically normalizes strings by:
+        - Converting to lowercase
+        - Removing spaces, dashes, underscores, dots, colons, semicolons, commas
+        - Handling various naming conventions automatically
+
+        ```python
+        class Protocol(AutoEnum):
+            HTTP_SECURE = alias("HTTPS", "http-secure", "HTTP Secure")
+
+        # All variations work due to normalization
+        p1 = Protocol("HTTP-SECURE")    # HTTP_SECURE
+        p2 = Protocol("http_secure")    # HTTP_SECURE
+        p3 = Protocol("HTTP Secure")    # HTTP_SECURE
+        p4 = Protocol("httpsecure")     # HTTP_SECURE (spaces removed)
+        ```
+
+    Error Handling:
+        ```python
+        try:
+            status = Priority("invalid_priority")
+        except ValueError as e:
+            print(f"Error: {e}")
+            # Output: Could not find enum with value 'invalid_priority';
+            #         available: ['HIGH', 'MEDIUM', 'LOW']
+
+        # Safe conversion patterns
+        def safe_priority(value: str) -> Optional[Priority]:
+            return Priority.from_str(value, raise_error=False)
+
+        priority = safe_priority("maybe_valid")  # Returns None if invalid
+        if priority:
+            print(f"Valid priority: {priority}")
         ```
     """
 
