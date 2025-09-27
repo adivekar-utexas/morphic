@@ -135,13 +135,16 @@ class Registry(ABC):
                     f"overriding subclasses is not permitted."
                 )
             elif subclass_name not in registered_names and not cls._allow_multiple_subclasses:
+                if len(registered_names) == 0:
+                    raise ValueError(f"Invalid state: key '{k}' is registered to an empty dict")
                 if len(registered_names) > 1:
                     raise ValueError(
                         f"Invalid state: _allow_multiple_subclasses is False but multiple subclasses "
                         f"are registered against key {k}"
                     )
+                existing_subclass = next(iter(registered_names))
                 raise KeyError(
-                    f"Key {k} is already registered to subclass {next(iter(registered_names))}; "
+                    f"Key {k} is already registered to subclass {existing_subclass}; "
                     f"registering multiple subclasses to the same key is not permitted."
                 )
 
@@ -168,6 +171,12 @@ class Registry(ABC):
         """
         if isinstance(key, str):
             subclasses = cls._registry.get(_str_normalize(key))
+        elif isinstance(key, tuple):
+            # Normalize tuple keys the same way as during registration
+            normalized_key = tuple(
+                _str_normalize(key_part) if isinstance(key_part, str) else key_part for key_part in key
+            )
+            subclasses = cls._registry.get(normalized_key)
         else:
             subclasses = cls._registry.get(key)
 
@@ -205,10 +214,19 @@ class Registry(ABC):
         """Remove a subclass from the registry."""
         name = subclass if isinstance(subclass, str) else subclass.__name__
 
-        for registered_dict in cls._registry.values():
+        # Remove from all registry entries and clean up empty dictionaries
+        keys_to_remove = []
+        for key, registered_dict in cls._registry.items():
             for subclass_name in list(registered_dict.keys()):
                 if _str_normalize(subclass_name) == _str_normalize(name):
                     registered_dict.pop(subclass_name, None)
+            # Mark empty dictionaries for removal
+            if not registered_dict:
+                keys_to_remove.append(key)
+
+        # Remove empty registry entries
+        for key in keys_to_remove:
+            cls._registry.pop(key, None)
 
     @classmethod
     def _registry_keys(cls) -> Optional[Union[List[Any], Any]]:
