@@ -5,10 +5,10 @@ from typing import Any, ClassVar, Dict, Type, TypeVar, Union, get_args, get_orig
 from functools import wraps
 import inspect
 
-T = TypeVar("T", bound="DataModel")
+T = TypeVar("T", bound="Typed")
 
 
-class DataModel:
+class Typed:
     """Base class for all configuration classes with enhanced dict conversion and validation.
 
     This class provides Pydantic-like functionality for dataclasses without external dependencies.
@@ -18,12 +18,12 @@ class DataModel:
     Features:
     - Automatic dataclass transformation for subclasses
     - Automatic type validation for all field types
-    - Automatic nested DataModel conversion in constructor
+    - Automatic nested Typed conversion in constructor
     - Automatic validation after instance creation
     - Automatic type conversion from dictionaries
     - **Default value validation and conversion at class definition time**
     - **Automatic mutable default handling with default_factory**
-    - **Hierarchical default value conversion (nested DataModels, lists, dicts)**
+    - **Hierarchical default value conversion (nested Typeds, lists, dicts)**
     - AutoEnum string conversion with fuzzy matching and aliases (if morphic.AutoEnum is available)
     - Nested object support with validation
     - Serialization/deserialization with filtering options
@@ -34,17 +34,17 @@ class DataModel:
     - Default values are validated and converted at class definition time
     - Invalid defaults raise clear errors when the class is defined
     - Convertible defaults are automatically transformed (e.g., "25" -> 25 for int fields)
-    - Mutable defaults (lists, dicts, DataModel objects) are automatically converted to default_factory
+    - Mutable defaults (lists, dicts, Typed objects) are automatically converted to default_factory
     - Hierarchical structures in defaults are recursively converted
     - Supports Optional fields, Union types, and complex nested structures
 
     Basic Usage Examples:
         ```python
-        from morphic import DataModel, AutoEnum, alias
+        from morphic import Typed, AutoEnum, alias
         from typing import List, Dict, Optional, Union
 
         # Simple dataclass with automatic validation
-        class User(DataModel):
+        class User(Typed):
             name: str
             age: int
             active: bool = True
@@ -76,13 +76,13 @@ class DataModel:
 
     Advanced Examples:
         ```python
-        # Nested DataModel objects with automatic conversion
-        class Address(DataModel):
+        # Nested Typed objects with automatic conversion
+        class Address(Typed):
             street: str
             city: str
             zip_code: str = "00000"
 
-        class Company(DataModel):
+        class Company(Typed):
             name: str
             address: Address
             employees: List[str] = []
@@ -105,7 +105,7 @@ class DataModel:
         assert company2.address.zip_code == "00000"  # Default value
 
         # Complex nested structures
-        class Project(DataModel):
+        class Project(Typed):
             name: str
             team_lead: User
             members: List[User]
@@ -129,7 +129,7 @@ class DataModel:
     Default Value Validation Examples:
         ```python
         # Basic default value conversion
-        class Config(DataModel):
+        class Config(Typed):
             port: int = "8080"        # String automatically converted to int
             debug: bool = "true"      # String automatically converted to bool
             timeout: float = "30.5"   # String automatically converted to float
@@ -140,17 +140,17 @@ class DataModel:
 
         # Invalid defaults caught at class definition time
         try:
-            class BadConfig(DataModel):
+            class BadConfig(Typed):
                 count: int = "not_a_number"  # Raises TypeError immediately
         except TypeError as e:
             print(f"Invalid default caught: {e}")
 
         # Hierarchical default conversion
-        class Contact(DataModel):
+        class Contact(Typed):
             name: str
             email: str
 
-        class ContactList(DataModel):
+        class ContactList(Typed):
             # Dict converted to Contact object automatically
             primary: Contact = {"name": "Admin", "email": "admin@example.com"}
 
@@ -179,7 +179,7 @@ class DataModel:
         assert len(contacts2.contacts) == 2  # Unchanged
 
         # Optional fields with proper None handling
-        class OptionalConfig(DataModel):
+        class OptionalConfig(Typed):
             name: str
             description: Optional[str] = None  # None is valid for Optional types
             settings: Optional[Dict[str, str]] = None
@@ -213,7 +213,7 @@ class DataModel:
 
     Advanced Features:
         - Supports Union types: Union[int, str] defaults try conversion in declaration order
-        - Handles deeply nested structures: Dict[str, List[DataModel]] with full conversion
+        - Handles deeply nested structures: Dict[str, List[Typed]] with full conversion
         - Integrates with custom validation: default values must pass validate() method
         - Compatible with dataclass field() for advanced default_factory scenarios
         - Works seamlessly with AutoEnum string conversion and aliases
@@ -331,20 +331,20 @@ class DataModel:
         # Handle generic types first before isinstance check
         origin_type = get_origin(target_type)
         if origin_type is not None:
-            # Handle List[DataModel] or similar list structures
+            # Handle List[Typed] or similar list structures
             if origin_type is list:
                 type_args = get_args(target_type)
                 if type_args and isinstance(value, (list, tuple)):
                     element_type = type_args[0]
-                    # Convert each element if it's a DataModel type
-                    if cls._is_datamodel_type(element_type):
+                    # Convert each element if it's a Typed type
+                    if cls._is_Typed_type(element_type):
                         return [cls._convert_single_type(element_type, item) for item in value]
-                    # For non-DataModel types, try basic conversion
+                    # For non-Typed types, try basic conversion
                     else:
                         return [cls._convert_single_type(element_type, item) for item in value]
                 return value
 
-            # Handle Dict[str, DataModel] or similar dict structures
+            # Handle Dict[str, Typed] or similar dict structures
             elif origin_type is dict:
                 type_args = get_args(target_type)
                 if len(type_args) >= 2 and isinstance(value, dict):
@@ -407,9 +407,9 @@ class DataModel:
                     return target_type(value)
                 return value
 
-        # Handle nested DataModel objects
+        # Handle nested Typed objects
         if hasattr(target_type, "__bases__") and any(
-            issubclass(base, DataModel) for base in target_type.__bases__ if isinstance(base, type)
+            issubclass(base, Typed) for base in target_type.__bases__ if isinstance(base, type)
         ):
             if isinstance(value, dict):
                 return target_type.from_dict(value)
@@ -448,12 +448,12 @@ class DataModel:
             if exclude_defaults and self._is_default_value(field, value):
                 continue
 
-            # Convert nested DataModel objects
+            # Convert nested Typed objects
             if hasattr(value, "to_dict"):
                 result[field_name] = value.to_dict(
                     exclude_none=exclude_none, exclude_defaults=exclude_defaults
                 )
-            # Handle lists that might contain DataModel objects
+            # Handle lists that might contain Typed objects
             elif isinstance(value, list):
                 converted_list = []
                 for item in value:
@@ -472,7 +472,7 @@ class DataModel:
                     else:
                         converted_list.append(item)
                 result[field_name] = converted_list
-            # Handle dictionaries that might contain DataModel objects
+            # Handle dictionaries that might contain Typed objects
             elif isinstance(value, dict):
                 converted_dict = {}
                 for k, v in value.items():
@@ -541,7 +541,7 @@ class DataModel:
     def _convert_field_values(self) -> None:
         """Convert field values to appropriate types before validation.
 
-        This enables automatic conversion of dictionaries to nested DataModel objects
+        This enables automatic conversion of dictionaries to nested Typed objects
         and basic type conversion (like string to int) in the regular constructor.
         This makes the constructor behavior consistent with from_dict().
         """
@@ -559,17 +559,17 @@ class DataModel:
 
     @classmethod
     def _convert_value_strict(cls, field: Field, value: Any) -> Any:
-        """Convert a value with strict rules (only nested DataModels and enums).
+        """Convert a value with strict rules (only nested Typeds and enums).
 
         This is used in the constructor to maintain strict type validation while
-        still allowing dict-to-DataModel conversion for nested objects.
+        still allowing dict-to-Typed conversion for nested objects.
         """
         if value is None:
             return None
 
         field_type = field.type
 
-        # Handle Union types (e.g., Optional[DataModel])
+        # Handle Union types (e.g., Optional[Typed])
         if get_origin(field_type) is Union:
             union_args = get_args(field_type)
             # Try each type in the union
@@ -589,22 +589,22 @@ class DataModel:
     def _convert_single_type_strict(cls, target_type: Type, value: Any) -> Any:
         """Convert value to a single target type with strict rules.
 
-        Only converts nested DataModel objects and enums, not basic types.
-        Also handles hierarchical structures like List[DataModel] and Dict[str, DataModel].
+        Only converts nested Typed objects and enums, not basic types.
+        Also handles hierarchical structures like List[Typed] and Dict[str, Typed].
         """
-        # Handle generic types (e.g., List[DataModel], Dict[str, DataModel])
+        # Handle generic types (e.g., List[Typed], Dict[str, Typed])
         origin_type = get_origin(target_type)
         if origin_type is not None:
-            # Handle List[DataModel] or similar list structures
+            # Handle List[Typed] or similar list structures
             if origin_type is list:
                 type_args = get_args(target_type)
                 if type_args and isinstance(value, list):
                     element_type = type_args[0]
-                    # Convert each element if it's a DataModel type
-                    if cls._is_datamodel_type(element_type) and all(isinstance(item, dict) for item in value):
+                    # Convert each element if it's a Typed type
+                    if cls._is_Typed_type(element_type) and all(isinstance(item, dict) for item in value):
                         return [element_type(**item) for item in value]
-                    # Also handle nested conversions for existing DataModel instances
-                    elif cls._is_datamodel_type(element_type):
+                    # Also handle nested conversions for existing Typed instances
+                    elif cls._is_Typed_type(element_type):
                         converted_items = []
                         for item in value:
                             if isinstance(item, dict):
@@ -614,13 +614,13 @@ class DataModel:
                         return converted_items
                 return value
 
-            # Handle Dict[str, DataModel] or similar dict structures
+            # Handle Dict[str, Typed] or similar dict structures
             elif origin_type is dict:
                 type_args = get_args(target_type)
                 if len(type_args) >= 2 and isinstance(value, dict):
                     value_type = type_args[1]  # Second type arg is the value type
-                    # Convert dict values if they're DataModel types
-                    if cls._is_datamodel_type(value_type):
+                    # Convert dict values if they're Typed types
+                    if cls._is_Typed_type(value_type):
                         converted_dict = {}
                         for k, v in value.items():
                             if isinstance(v, dict):
@@ -677,9 +677,9 @@ class DataModel:
                         return value
                 return value
 
-        # Handle nested DataModel objects
+        # Handle nested Typed objects
         if hasattr(target_type, "__bases__") and any(
-            issubclass(base, DataModel) for base in target_type.__bases__ if isinstance(base, type)
+            issubclass(base, Typed) for base in target_type.__bases__ if isinstance(base, type)
         ):
             if isinstance(value, dict):
                 # Create nested object directly to maintain strict validation
@@ -692,14 +692,14 @@ class DataModel:
         return value
 
     @classmethod
-    def _is_datamodel_type(cls, target_type: Type) -> bool:
-        """Check if a type is a DataModel subclass.
+    def _is_Typed_type(cls, target_type: Type) -> bool:
+        """Check if a type is a Typed subclass.
 
         Args:
             target_type: The type to check
 
         Returns:
-            True if target_type is a subclass of DataModel, False otherwise
+            True if target_type is a subclass of Typed, False otherwise
 
         Note:
             This method safely handles types that may not be classes or may
@@ -709,7 +709,7 @@ class DataModel:
             return False
         try:
             return any(
-                issubclass(base, DataModel) for base in target_type.__bases__ if isinstance(base, type)
+                issubclass(base, Typed) for base in target_type.__bases__ if isinstance(base, type)
             )
         except TypeError:
             return False
@@ -720,7 +720,7 @@ class DataModel:
 
         This method is called during class creation (in __init_subclass__) to:
         1. Convert default values to appropriate types (e.g., "25" -> 25 for int fields)
-        2. Handle hierarchical defaults (convert dicts to DataModel objects)
+        2. Handle hierarchical defaults (convert dicts to Typed objects)
         3. Convert mutable defaults to default_factory to prevent shared mutable state
         4. Validate that converted defaults comply with their type annotations
         5. Provide clear error messages for invalid defaults
@@ -733,12 +733,12 @@ class DataModel:
 
         Examples:
             ```python
-            class Config(DataModel):
+            class Config(Typed):
                 port: int = "8080"  # Converted to int(8080)
                 users: List[User] = [{"name": "admin"}]  # Converted to default_factory
 
             # Raises TypeError at class definition:
-            class BadConfig(DataModel):
+            class BadConfig(Typed):
                 count: int = "invalid"  # Cannot convert to int
             ```
         """
@@ -764,11 +764,11 @@ class DataModel:
                     converted_default = cls._convert_value(mock_field, default_value)
 
                     # Handle mutable defaults - convert to default_factory
-                    # Include DataModel objects as they are also mutable
+                    # Include Typed objects as they are also mutable
                     is_mutable = isinstance(converted_default, (list, dict, set)) or (
                         hasattr(converted_default, '__dict__') and
                         hasattr(converted_default.__class__, '__bases__') and
-                        any(issubclass(base, DataModel) for base in converted_default.__class__.__bases__ if isinstance(base, type))
+                        any(issubclass(base, Typed) for base in converted_default.__class__.__bases__ if isinstance(base, type))
                     )
 
                     if is_mutable:
@@ -785,14 +785,14 @@ class DataModel:
                                 elif isinstance(value, set):
                                     return value.copy()
                                 elif hasattr(value, 'copy'):
-                                    # For DataModel objects that might have a copy method
+                                    # For Typed objects that might have a copy method
                                     try:
                                         return value.copy()
                                     except (AttributeError, TypeError):
                                         # If copy fails, create a new instance from dict
                                         return value.__class__.from_dict(value.to_dict())
                                 else:
-                                    # For other DataModel objects, create new instance
+                                    # For other Typed objects, create new instance
                                     if hasattr(value, 'to_dict') and hasattr(value.__class__, 'from_dict'):
                                         return value.__class__.from_dict(value.to_dict())
                                     return value
@@ -807,7 +807,7 @@ class DataModel:
 
                     # Basic type validation - create temp instance for validation methods
                     temp_instance = object.__new__(cls)
-                    temp_instance._DataModel__dict = {}  # Initialize to avoid AttributeError
+                    temp_instance._Typed__dict = {}  # Initialize to avoid AttributeError
 
                     # Special handling for None values with Optional types
                     if converted_default is None and temp_instance._type_allows_none(field_type):
@@ -942,9 +942,9 @@ class DataModel:
             ):
                 return isinstance(value, target_type)
 
-        # Handle nested DataModel objects
+        # Handle nested Typed objects
         if hasattr(target_type, "__bases__") and any(
-            issubclass(base, DataModel) for base in target_type.__bases__ if isinstance(base, type)
+            issubclass(base, Typed) for base in target_type.__bases__ if isinstance(base, type)
         ):
             return isinstance(value, target_type)
 
@@ -982,7 +982,7 @@ def validate(
     """Decorator that validates function arguments using type annotations.
 
     This decorator provides Pydantic-like validation for function arguments,
-    using the same type conversion and validation system as DataModel.
+    using the same type conversion and validation system as Typed.
 
     Args:
         func: The function to decorate (when used as @validate)
@@ -996,7 +996,7 @@ def validate(
 
     Examples:
         ```python
-        from morphic import DataModel, validate
+        from morphic import Typed, validate
 
         # Basic usage
         @validate
@@ -1015,8 +1015,8 @@ def validate(
         def get_user_name(user_id: int) -> str:
             return f"user_{user_id}"  # Return value validated as str
 
-        # With DataModel types
-        class User(DataModel):
+        # With Typed types
+        class User(Typed):
             name: str
             age: int
 
@@ -1036,7 +1036,7 @@ def validate(
 
     Features:
         - Automatic type conversion (e.g., "5" -> 5 for int parameters)
-        - DataModel object creation from dictionaries
+        - Typed object creation from dictionaries
         - AutoEnum string conversion with fuzzy matching
         - List and dict conversion for nested structures
         - Union type support (tries each type in order)
@@ -1088,12 +1088,12 @@ def validate(
                     validated_args[param_name] = value
                     continue
 
-                # Create a mock field for the DataModel conversion system
+                # Create a mock field for the Typed conversion system
                 mock_field = type('MockField', (), {'type': param.annotation})()
 
                 try:
-                    # Use DataModel's type conversion system
-                    converted_value = DataModel._convert_value(mock_field, value)
+                    # Use Typed's type conversion system
+                    converted_value = Typed._convert_value(mock_field, value)
 
                     # Validate the converted value (always using arbitrary_types_allowed=True)
                     if not _is_value_valid_for_annotation(converted_value, param.annotation):
@@ -1181,7 +1181,7 @@ def _validate_function_defaults(func: Callable, sig: inspect.Signature) -> None:
 def _convert_and_validate_default(mock_field: Any, value: Any, annotation: Type) -> Any:
     """Convert and validate default parameter values with strict validation.
 
-    This function is stricter than DataModel._convert_value and will raise
+    This function is stricter than Typed._convert_value and will raise
     ValidationError for any conversion that fails, ensuring default values
     are properly validated at decoration time.
     """
@@ -1268,9 +1268,9 @@ def _convert_and_validate_default_single_type(value: Any, target_type: Type) -> 
         # Some types can't be used with isinstance
         pass
 
-    # Handle DataModel types
+    # Handle Typed types
     if hasattr(target_type, "__bases__") and any(
-        issubclass(base, DataModel) for base in target_type.__bases__ if isinstance(base, type)
+        issubclass(base, Typed) for base in target_type.__bases__ if isinstance(base, type)
     ):
         if isinstance(value, dict):
             try:
@@ -1321,7 +1321,7 @@ def _is_value_valid_for_annotation(value: Any, annotation: Type) -> bool:
             return type(None) in union_args
         return False
 
-    # Use DataModel's validation logic (with arbitrary types allowed)
-    temp_instance = object.__new__(DataModel)
-    temp_instance._DataModel__dict = {}  # Initialize to avoid AttributeError
+    # Use Typed's validation logic (with arbitrary types allowed)
+    temp_instance = object.__new__(Typed)
+    temp_instance._Typed__dict = {}  # Initialize to avoid AttributeError
     return temp_instance._is_value_valid_for_type(value, annotation)

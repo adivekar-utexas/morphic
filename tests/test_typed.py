@@ -1,4 +1,4 @@
-"""Comprehensive tests for DataModel module."""
+"""Comprehensive tests for Typed module."""
 
 from dataclasses import field
 from typing import Dict, List, Optional, Union
@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from morphic.autoenum import AutoEnum, alias, auto
-from morphic.datamodel import DataModel
+from morphic.typed import Typed
 
 
 # Test fixtures and helper classes
@@ -27,7 +27,7 @@ class MockAutoEnum:
         return isinstance(other, MockAutoEnum) and self.value == other.value
 
 
-class SimpleDataModel(DataModel):
+class SimpleTyped(Typed):
     """Simple test model with basic types."""
 
     name: str
@@ -35,7 +35,7 @@ class SimpleDataModel(DataModel):
     active: bool = True
 
 
-class OptionalFieldsModel(DataModel):
+class OptionalFieldsModel(Typed):
     """Model with optional and union types."""
 
     required_field: str
@@ -44,21 +44,21 @@ class OptionalFieldsModel(DataModel):
     optional_int: Optional[int] = None
 
 
-class NestedDataModel(DataModel):
-    """Model with nested DataModel objects."""
+class NestedTyped(Typed):
+    """Model with nested Typed objects."""
 
-    user: SimpleDataModel
-    metadata: Optional[SimpleDataModel] = None
+    user: SimpleTyped
+    metadata: Optional[SimpleTyped] = None
 
 
-class EnumDataModel(DataModel):
+class EnumTyped(Typed):
     """Model with enum fields."""
 
     status: SimpleEnum
     optional_status: Optional[SimpleEnum] = None
 
 
-class DefaultValueModel(DataModel):
+class DefaultValueModel(Typed):
     """Model with various default values."""
 
     name: str = "default_name"
@@ -67,19 +67,19 @@ class DefaultValueModel(DataModel):
     active: bool = True
 
 
-class ComplexModel(DataModel):
+class ComplexModel(Typed):
     """Complex model for comprehensive testing."""
 
     id: int
     name: str
-    nested: SimpleDataModel
+    nested: SimpleTyped
     enum_field: SimpleEnum
-    optional_nested: Optional[NestedDataModel] = None
+    optional_nested: Optional[NestedTyped] = None
     union_field: Union[int, str, float] = 42
     list_field: list = field(default_factory=list)  # Use simple list type to avoid isinstance issues
 
 
-class ValidationModel(DataModel):
+class ValidationModel(Typed):
     """Model with custom validation."""
 
     name: str
@@ -92,22 +92,22 @@ class ValidationModel(DataModel):
             raise ValueError("Name cannot be empty")
 
 
-class TestDataModelBasics:
-    """Test basic DataModel functionality."""
+class TestTypedBasics:
+    """Test basic Typed functionality."""
 
     def test_simple_instantiation(self):
         """Test basic model instantiation."""
-        model = SimpleDataModel(name="John", age=30)
+        model = SimpleTyped(name="John", age=30)
         assert model.name == "John"
         assert model.age == 30
         assert model.active is True
 
     def test_repr_method(self):
         """Test __repr__ method output."""
-        model = SimpleDataModel(name="John", age=30, active=False)
+        model = SimpleTyped(name="John", age=30, active=False)
         repr_str = repr(model)
 
-        assert "SimpleDataModel" in repr_str
+        assert "SimpleTyped" in repr_str
         assert "name='John'" in repr_str
         assert "age=30" in repr_str
         assert "active=False" in repr_str
@@ -115,8 +115,8 @@ class TestDataModelBasics:
     def test_field_caching(self):
         """Test that field information is cached properly."""
         # Create multiple instances to test caching
-        model1 = SimpleDataModel(name="John", age=30)
-        model2 = SimpleDataModel(name="Jane", age=25)
+        model1 = SimpleTyped(name="John", age=30)
+        model2 = SimpleTyped(name="Jane", age=25)
 
         # Get field info which should populate cache
         field_info1 = model1._get_field_info()
@@ -133,7 +133,7 @@ class TestFromDict:
     def test_basic_from_dict(self):
         """Test basic dictionary to model conversion."""
         data = {"name": "John", "age": 30, "active": False}
-        model = SimpleDataModel.from_dict(data)
+        model = SimpleTyped.from_dict(data)
 
         assert model.name == "John"
         assert model.age == 30
@@ -157,7 +157,7 @@ class TestFromDict:
             "active": "true",  # String that should convert to bool (won't work with basic bool())
         }
 
-        model = SimpleDataModel.from_dict(data)
+        model = SimpleTyped.from_dict(data)
         assert model.name == "John"
         assert model.age == 30
         # Note: "true" won't convert to True with bool("true") - it would be True anyway
@@ -176,18 +176,18 @@ class TestFromDict:
         assert model.union_field == "hello"
 
     def test_from_dict_with_nested_objects(self):
-        """Test from_dict with nested DataModel objects."""
+        """Test from_dict with nested Typed objects."""
         data = {
             "user": {"name": "John", "age": 30, "active": True},
             "metadata": {"name": "Meta", "age": 25, "active": False},
         }
-        model = NestedDataModel.from_dict(data)
+        model = NestedTyped.from_dict(data)
 
-        assert isinstance(model.user, SimpleDataModel)
+        assert isinstance(model.user, SimpleTyped)
         assert model.user.name == "John"
         assert model.user.age == 30
 
-        assert isinstance(model.metadata, SimpleDataModel)
+        assert isinstance(model.metadata, SimpleTyped)
         assert model.metadata.name == "Meta"
         assert model.metadata.age == 25
 
@@ -195,7 +195,7 @@ class TestFromDict:
         """Test from_dict with AutoEnum fields."""
         # Test with string values (should auto-convert to AutoEnum)
         data = {"status": "VALUE_A", "optional_status": "VALUE_B"}
-        model = EnumDataModel.from_dict(data)
+        model = EnumTyped.from_dict(data)
 
         assert model.status == SimpleEnum.VALUE_A
         assert model.optional_status == SimpleEnum.VALUE_B
@@ -204,7 +204,7 @@ class TestFromDict:
 
         # Test with alias
         data_alias = {"status": "C", "optional_status": "charlie"}
-        model_alias = EnumDataModel.from_dict(data_alias)
+        model_alias = EnumTyped.from_dict(data_alias)
         assert model_alias.status == SimpleEnum.VALUE_C
         assert model_alias.optional_status == SimpleEnum.VALUE_C
 
@@ -213,19 +213,19 @@ class TestFromDict:
 
         # Test case-insensitive conversion
         data = {"status": "value_a", "optional_status": "VALUE_B"}
-        model = EnumDataModel.from_dict(data)
+        model = EnumTyped.from_dict(data)
         assert model.status == SimpleEnum.VALUE_A
         assert model.optional_status == SimpleEnum.VALUE_B
 
         # Test fuzzy matching (spaces, underscores, etc.)
         data_fuzzy = {"status": "Value A", "optional_status": "value-b"}
-        model_fuzzy = EnumDataModel.from_dict(data_fuzzy)
+        model_fuzzy = EnumTyped.from_dict(data_fuzzy)
         assert model_fuzzy.status == SimpleEnum.VALUE_A
         assert model_fuzzy.optional_status == SimpleEnum.VALUE_B
 
         # Test alias functionality
         data_alias = {"status": "C", "optional_status": "charlie"}
-        model_alias = EnumDataModel.from_dict(data_alias)
+        model_alias = EnumTyped.from_dict(data_alias)
         assert model_alias.status == SimpleEnum.VALUE_C
         assert model_alias.optional_status == SimpleEnum.VALUE_C
 
@@ -234,7 +234,7 @@ class TestFromDict:
         assert result["status"] == "VALUE_C"
         assert result["optional_status"] == "VALUE_C"
 
-    @patch("morphic.datamodel.DataModel._convert_single_type")
+    @patch("morphic.typed.Typed._convert_single_type")
     def test_from_dict_with_mock_autoenum(self, mock_convert):
         """Test from_dict with AutoEnum support."""
         # Mock the import and AutoEnum behavior
@@ -252,17 +252,17 @@ class TestFromDict:
         data = {"name": "John", "age": 30, "unknown_field": "value"}
 
         # Should work in non-strict mode
-        model = SimpleDataModel.from_dict(data, strict=False)
+        model = SimpleTyped.from_dict(data, strict=False)
         assert model.name == "John"
 
         # Should raise error in strict mode
         with pytest.raises(ValueError, match="Unknown field 'unknown_field'"):
-            SimpleDataModel.from_dict(data, strict=True)
+            SimpleTyped.from_dict(data, strict=True)
 
     def test_from_dict_invalid_input_type(self):
         """Test from_dict with invalid input type."""
         with pytest.raises(TypeError, match="Expected dict, got"):
-            SimpleDataModel.from_dict("not a dict")
+            SimpleTyped.from_dict("not a dict")
 
     def test_from_dict_none_values(self):
         """Test from_dict with None values."""
@@ -278,7 +278,7 @@ class TestToDict:
 
     def test_basic_to_dict(self):
         """Test basic model to dictionary conversion."""
-        model = SimpleDataModel(name="John", age=30, active=False)
+        model = SimpleTyped(name="John", age=30, active=False)
         result = model.to_dict()
 
         expected = {"name": "John", "age": 30, "active": False}
@@ -312,9 +312,9 @@ class TestToDict:
         assert "active" not in result  # default value
 
     def test_to_dict_with_nested_objects(self):
-        """Test to_dict with nested DataModel objects."""
-        nested_user = SimpleDataModel(name="John", age=30)
-        model = NestedDataModel(user=nested_user)
+        """Test to_dict with nested Typed objects."""
+        nested_user = SimpleTyped(name="John", age=30)
+        model = NestedTyped(user=nested_user)
         result = model.to_dict()
 
         assert "user" in result
@@ -324,18 +324,18 @@ class TestToDict:
 
     def test_to_dict_with_enum(self):
         """Test to_dict with enum fields."""
-        model = EnumDataModel(status=SimpleEnum.VALUE_A)
+        model = EnumTyped(status=SimpleEnum.VALUE_A)
         result = model.to_dict()
 
         assert result["status"] == "VALUE_A"  # AutoEnum uses name as value
 
-    @patch("morphic.datamodel.DataModel._is_default_value")
+    @patch("morphic.typed.Typed._is_default_value")
     def test_to_dict_complex_exclude_options(self, mock_is_default):
         """Test to_dict with both exclude options."""
         mock_is_default.return_value = False
 
-        nested_user = SimpleDataModel(name="John", age=30)
-        model = NestedDataModel(user=nested_user, metadata=None)
+        nested_user = SimpleTyped(name="John", age=30)
+        model = NestedTyped(user=nested_user, metadata=None)
 
         result = model.to_dict(exclude_none=True, exclude_defaults=True)
 
@@ -348,7 +348,7 @@ class TestCopy:
 
     def test_basic_copy(self):
         """Test basic copy without changes."""
-        original = SimpleDataModel(name="John", age=30, active=False)
+        original = SimpleTyped(name="John", age=30, active=False)
         copy = original.copy()
 
         assert copy.name == original.name
@@ -358,7 +358,7 @@ class TestCopy:
 
     def test_copy_with_changes(self):
         """Test copy with field changes."""
-        original = SimpleDataModel(name="John", age=30, active=False)
+        original = SimpleTyped(name="John", age=30, active=False)
         copy = original.copy(name="Jane", age=25)
 
         assert copy.name == "Jane"
@@ -368,13 +368,13 @@ class TestCopy:
 
     def test_copy_complex_model(self):
         """Test copy with complex nested model."""
-        user = SimpleDataModel(name="John", age=30)
-        original = NestedDataModel(user=user)
+        user = SimpleTyped(name="John", age=30)
+        original = NestedTyped(user=user)
 
         new_user_data = {"name": "Jane", "age": 25, "active": True}
         copy = original.copy(user=new_user_data)
 
-        assert isinstance(copy.user, SimpleDataModel)
+        assert isinstance(copy.user, SimpleTyped)
         assert copy.user.name == "Jane"
         assert original.user.name == "John"  # Original unchanged
 
@@ -384,7 +384,7 @@ class TestValidation:
 
     def test_default_validate(self):
         """Test default validate method (should do nothing)."""
-        model = SimpleDataModel(name="John", age=30)
+        model = SimpleTyped(name="John", age=30)
         model.validate()  # Should not raise any exception
 
     def test_custom_validation(self):
@@ -404,7 +404,7 @@ class TestValidation:
     def test_automatic_validation(self):
         """Test that validation is called automatically during instance creation."""
 
-        class AutoValidateModel(DataModel):
+        class AutoValidateModel(Typed):
             value: int
 
             def validate(self):
@@ -434,25 +434,25 @@ class TestTypeConversion:
     def test_convert_basic_types(self):
         """Test conversion of basic types."""
         # String to int
-        result = SimpleDataModel._convert_single_type(int, "42")
+        result = SimpleTyped._convert_single_type(int, "42")
         assert result == 42
 
         # String to float
-        result = SimpleDataModel._convert_single_type(float, "3.14")
+        result = SimpleTyped._convert_single_type(float, "3.14")
         assert result == 3.14
 
         # String to bool
-        result = SimpleDataModel._convert_single_type(bool, "true")
+        result = SimpleTyped._convert_single_type(bool, "true")
         assert result is True
 
         # Already correct type
-        result = SimpleDataModel._convert_single_type(str, "hello")
+        result = SimpleTyped._convert_single_type(str, "hello")
         assert result == "hello"
 
     def test_convert_invalid_types(self):
         """Test conversion with invalid input."""
         # Invalid conversion should return original value
-        result = SimpleDataModel._convert_single_type(int, "not_a_number")
+        result = SimpleTyped._convert_single_type(int, "not_a_number")
         assert result == "not_a_number"
 
     def test_convert_none_value(self):
@@ -460,7 +460,7 @@ class TestTypeConversion:
         field_mock = Mock()
         field_mock.type = int
 
-        result = SimpleDataModel._convert_value(field_mock, None)
+        result = SimpleTyped._convert_value(field_mock, None)
         assert result is None
 
     def test_convert_union_types(self):
@@ -469,17 +469,17 @@ class TestTypeConversion:
         field_mock.type = Union[int, str]
 
         # Should try to convert to int first
-        result = SimpleDataModel._convert_value(field_mock, "42")
+        result = SimpleTyped._convert_value(field_mock, "42")
         assert result == 42
 
         # Should convert to string if int conversion fails
-        result2 = SimpleDataModel._convert_value(field_mock, "hello")
+        result2 = SimpleTyped._convert_value(field_mock, "hello")
         assert result2 == "hello"
 
         # Should try int conversion first, then str
         field_mock2 = Mock()
         field_mock2.type = Union[str, int]  # Different order
-        result3 = SimpleDataModel._convert_value(field_mock2, "42")
+        result3 = SimpleTyped._convert_value(field_mock2, "42")
         # This should still convert to str since it's the first type in the union
         assert result3 == "42"
 
@@ -490,7 +490,7 @@ class TestEdgeCases:
     def test_empty_model(self):
         """Test model with no fields."""
 
-        class EmptyModel(DataModel):
+        class EmptyModel(Typed):
             pass
 
         model = EmptyModel()
@@ -503,7 +503,7 @@ class TestEdgeCases:
     def test_model_with_complex_defaults(self):
         """Test model with complex default values."""
 
-        class ComplexDefaultModel(DataModel):
+        class ComplexDefaultModel(Typed):
             data: Dict[str, int] = field(default_factory=dict)
             items: List[str] = field(default_factory=list)
 
@@ -517,8 +517,8 @@ class TestEdgeCases:
     def test_circular_reference_prevention(self):
         """Test handling of potential circular references."""
         # This tests that to_dict handles nested objects properly
-        user = SimpleDataModel(name="John", age=30)
-        nested = NestedDataModel(user=user)
+        user = SimpleTyped(name="John", age=30)
+        nested = NestedTyped(user=user)
 
         # Should not cause infinite recursion
         result = nested.to_dict()
@@ -527,7 +527,7 @@ class TestEdgeCases:
     def test_large_model_performance(self):
         """Test performance with model containing many fields."""
 
-        class LargeModel(DataModel):
+        class LargeModel(Typed):
             field_1: str = "value_1"
             field_2: str = "value_2"
             field_3: str = "value_3"
@@ -568,7 +568,7 @@ class TestIntegration:
         model = ComplexModel.from_dict(data)
         assert model.id == 1
         assert model.name == "Test Item"
-        assert isinstance(model.nested, SimpleDataModel)
+        assert isinstance(model.nested, SimpleTyped)
         assert model.enum_field == SimpleEnum.VALUE_A
 
         # Modify the model
@@ -587,10 +587,10 @@ class TestIntegration:
         """Test validation with nested models."""
         # Create nested model that should validate
         user_data = {"name": "John", "age": 30}
-        user = SimpleDataModel.from_dict(user_data)
+        user = SimpleTyped.from_dict(user_data)
         user.validate()  # Should pass
 
-        nested = NestedDataModel(user=user)
+        nested = NestedTyped(user=user)
         nested.validate()  # Should pass
 
     def test_roundtrip_consistency(self):
@@ -598,21 +598,21 @@ class TestIntegration:
         original_data = {"name": "Test", "age": 25, "active": True}
 
         # Convert to model and back
-        model = SimpleDataModel.from_dict(original_data)
+        model = SimpleTyped.from_dict(original_data)
         result_data = model.to_dict()
 
         assert result_data == original_data
 
     def test_model_inheritance_caching(self):
-        """Test that field caching works correctly with separate DataModel classes."""
+        """Test that field caching works correctly with separate Typed classes."""
 
-        class ExtendedModel(DataModel):
+        class ExtendedModel(Typed):
             name: str
             age: int
             active: bool = True
             extra_field: str = "extra"
 
-        base_model = SimpleDataModel(name="Base", age=30)
+        base_model = SimpleTyped(name="Base", age=30)
         extended_model = ExtendedModel(name="Extended", age=25, extra_field="test")
 
         # Should have separate cache entries
@@ -635,11 +635,11 @@ class TestIntegration:
 class TestHierarchicalTyping:
     """Test hierarchical typing support for complex nested structures."""
 
-    def test_list_of_datamodels_constructor(self):
-        """Test constructor with list of DataModel dictionaries."""
+    def test_list_of_Typeds_constructor(self):
+        """Test constructor with list of Typed dictionaries."""
 
-        class PersonList(DataModel):
-            people: List[SimpleDataModel]
+        class PersonList(Typed):
+            people: List[SimpleTyped]
 
         data = PersonList(people=[
             {"name": "John", "age": 30, "active": True},
@@ -647,16 +647,16 @@ class TestHierarchicalTyping:
         ])
 
         assert len(data.people) == 2
-        assert isinstance(data.people[0], SimpleDataModel)
-        assert isinstance(data.people[1], SimpleDataModel)
+        assert isinstance(data.people[0], SimpleTyped)
+        assert isinstance(data.people[1], SimpleTyped)
         assert data.people[0].name == "John"
         assert data.people[1].name == "Jane"
 
-    def test_list_of_datamodels_from_dict(self):
-        """Test from_dict with list of DataModel objects."""
+    def test_list_of_Typeds_from_dict(self):
+        """Test from_dict with list of Typed objects."""
 
-        class PersonList(DataModel):
-            people: List[SimpleDataModel]
+        class PersonList(Typed):
+            people: List[SimpleTyped]
 
         input_data = {
             "people": [
@@ -668,17 +668,17 @@ class TestHierarchicalTyping:
         data = PersonList.from_dict(input_data)
 
         assert len(data.people) == 2
-        assert isinstance(data.people[0], SimpleDataModel)
+        assert isinstance(data.people[0], SimpleTyped)
         assert data.people[0].name == "John"
         assert data.people[0].age == 30  # Converted from string
         assert data.people[1].name == "Jane"
         assert data.people[1].age == 25  # Converted from string
 
-    def test_dict_of_datamodels_constructor(self):
-        """Test constructor with dictionary of DataModel objects."""
+    def test_dict_of_Typeds_constructor(self):
+        """Test constructor with dictionary of Typed objects."""
 
-        class PersonDict(DataModel):
-            users: Dict[str, SimpleDataModel]
+        class PersonDict(Typed):
+            users: Dict[str, SimpleTyped]
 
         data = PersonDict(users={
             "admin": {"name": "Admin", "age": 35, "active": True},
@@ -686,16 +686,16 @@ class TestHierarchicalTyping:
         })
 
         assert len(data.users) == 2
-        assert isinstance(data.users["admin"], SimpleDataModel)
-        assert isinstance(data.users["guest"], SimpleDataModel)
+        assert isinstance(data.users["admin"], SimpleTyped)
+        assert isinstance(data.users["guest"], SimpleTyped)
         assert data.users["admin"].name == "Admin"
         assert data.users["guest"].name == "Guest"
 
-    def test_dict_of_datamodels_from_dict(self):
-        """Test from_dict with dictionary of DataModel objects."""
+    def test_dict_of_Typeds_from_dict(self):
+        """Test from_dict with dictionary of Typed objects."""
 
-        class PersonDict(DataModel):
-            users: Dict[str, SimpleDataModel]
+        class PersonDict(Typed):
+            users: Dict[str, SimpleTyped]
 
         input_data = {
             "users": {
@@ -707,18 +707,18 @@ class TestHierarchicalTyping:
         data = PersonDict.from_dict(input_data)
 
         assert len(data.users) == 2
-        assert isinstance(data.users["admin"], SimpleDataModel)
+        assert isinstance(data.users["admin"], SimpleTyped)
         assert data.users["admin"].age == 35  # Converted from string
         assert data.users["guest"].age == 20  # Converted from string
 
-    def test_nested_list_in_datamodel(self):
-        """Test deeply nested structure with lists inside DataModel objects."""
+    def test_nested_list_in_Typed(self):
+        """Test deeply nested structure with lists inside Typed objects."""
 
-        class TaskList(DataModel):
+        class TaskList(Typed):
             title: str
             tasks: List[str]
 
-        class Project(DataModel):
+        class Project(Typed):
             name: str
             task_lists: List[TaskList]
 
@@ -741,11 +741,11 @@ class TestHierarchicalTyping:
     def test_mixed_list_types(self):
         """Test list with mixed nested and basic types."""
 
-        class Contact(DataModel):
+        class Contact(Typed):
             name: str
             email: str
 
-        class ContactList(DataModel):
+        class ContactList(Typed):
             contacts: List[Contact]
             tags: List[str]
 
@@ -765,11 +765,11 @@ class TestHierarchicalTyping:
     def test_optional_hierarchical_fields(self):
         """Test optional fields with hierarchical types."""
 
-        class Address(DataModel):
+        class Address(Typed):
             street: str
             city: str
 
-        class Person(DataModel):
+        class Person(Typed):
             name: str
             addresses: Optional[List[Address]] = None
             metadata: Optional[Dict[str, str]] = None
@@ -794,11 +794,11 @@ class TestHierarchicalTyping:
     def test_hierarchical_to_dict(self):
         """Test to_dict with hierarchical structures."""
 
-        class Item(DataModel):
+        class Item(Typed):
             id: int
             name: str
 
-        class Inventory(DataModel):
+        class Inventory(Typed):
             items: List[Item]
             categories: Dict[str, Item]
 
@@ -824,11 +824,11 @@ class TestHierarchicalTyping:
     def test_hierarchical_with_enums(self):
         """Test hierarchical structures containing enums."""
 
-        class StatusItem(DataModel):
+        class StatusItem(Typed):
             name: str
             status: SimpleEnum
 
-        class StatusList(DataModel):
+        class StatusList(Typed):
             items: List[StatusItem]
             default_status: SimpleEnum = SimpleEnum.VALUE_A
 
@@ -851,15 +851,15 @@ class TestHierarchicalTyping:
         assert result["default_status"] == "VALUE_A"
 
     def test_deeply_nested_structures(self):
-        """Test very deep nesting of DataModel objects."""
+        """Test very deep nesting of Typed objects."""
 
-        class Level3(DataModel):
+        class Level3(Typed):
             value: str
 
-        class Level2(DataModel):
+        class Level2(Typed):
             level3_items: List[Level3]
 
-        class Level1(DataModel):
+        class Level1(Typed):
             level2_dict: Dict[str, Level2]
 
         data = Level1(level2_dict={
@@ -886,7 +886,7 @@ class TestHierarchicalTyping:
     def test_hierarchical_validation_errors(self):
         """Test that validation works correctly in hierarchical structures."""
 
-        class ValidatedItem(DataModel):
+        class ValidatedItem(Typed):
             name: str
             count: int
 
@@ -894,7 +894,7 @@ class TestHierarchicalTyping:
                 if self.count < 0:
                     raise ValueError("Count must be non-negative")
 
-        class ValidatedList(DataModel):
+        class ValidatedList(Typed):
             items: List[ValidatedItem]
 
         # Should work with valid data
@@ -914,11 +914,11 @@ class TestHierarchicalTyping:
     def test_hierarchical_type_validation(self):
         """Test type validation in hierarchical structures."""
 
-        class TypedItem(DataModel):
+        class TypedItem(Typed):
             name: str
             value: int
 
-        class TypedContainer(DataModel):
+        class TypedContainer(Typed):
             items: List[TypedItem]
 
         # Should work with correct types
@@ -938,11 +938,11 @@ class TestHierarchicalTyping:
     def test_roundtrip_hierarchical_consistency(self):
         """Test that hierarchical dict -> model -> dict is consistent."""
 
-        class Person(DataModel):
+        class Person(Typed):
             name: str
             age: int
 
-        class Team(DataModel):
+        class Team(Typed):
             name: str
             members: List[Person]
             leads: Dict[str, Person]
@@ -972,7 +972,7 @@ class TestDefaultValueValidation:
     def test_valid_default_values_pass(self):
         """Test that valid default values are accepted."""
 
-        class ValidDefaultsModel(DataModel):
+        class ValidDefaultsModel(Typed):
             name: str = "default_name"
             age: int = 25
             active: bool = True
@@ -988,7 +988,7 @@ class TestDefaultValueValidation:
     def test_convertible_default_values_are_converted(self):
         """Test that default values are automatically converted to the correct type."""
 
-        class ConvertibleDefaultsModel(DataModel):
+        class ConvertibleDefaultsModel(Typed):
             age: int = "25"  # String that can convert to int
             score: float = "85.5"  # String that can convert to float
             active: bool = "true"  # String that can convert to bool
@@ -1008,22 +1008,22 @@ class TestDefaultValueValidation:
 
         # Invalid string default for int field
         with pytest.raises(TypeError, match="Invalid default value for field 'age'"):
-            class InvalidIntDefaultModel(DataModel):
+            class InvalidIntDefaultModel(Typed):
                 age: int = "not_a_number"  # Can't convert to int
 
         # Invalid type that can't be converted
         with pytest.raises(TypeError, match="Invalid default value for field 'items'"):
-            class InvalidListDefaultModel(DataModel):
+            class InvalidListDefaultModel(Typed):
                 items: list = "not_a_list"  # Can't convert string to list
 
     def test_hierarchical_default_values_conversion(self):
         """Test that hierarchical default values are properly converted."""
 
-        class Address(DataModel):
+        class Address(Typed):
             street: str
             city: str
 
-        class PersonWithAddressDefault(DataModel):
+        class PersonWithAddressDefault(Typed):
             name: str = "John"
             # Default address as dict that should convert to Address object
             address: Address = {"street": "123 Main St", "city": "Anytown"}
@@ -1035,13 +1035,13 @@ class TestDefaultValueValidation:
         assert model.address.city == "Anytown"
 
     def test_list_default_values_conversion(self):
-        """Test that list default values with DataModel elements are converted."""
+        """Test that list default values with Typed elements are converted."""
 
-        class Contact(DataModel):
+        class Contact(Typed):
             name: str
             email: str
 
-        class ContactListModel(DataModel):
+        class ContactListModel(Typed):
             # Default list of contacts as dicts that should convert to Contact objects
             contacts: List[Contact] = [
                 {"name": "John", "email": "john@example.com"},
@@ -1055,13 +1055,13 @@ class TestDefaultValueValidation:
         assert model.contacts[1].name == "Jane"
 
     def test_dict_default_values_conversion(self):
-        """Test that dict default values with DataModel elements are converted."""
+        """Test that dict default values with Typed elements are converted."""
 
-        class User(DataModel):
+        class User(Typed):
             name: str
             role: str
 
-        class UserDictModel(DataModel):
+        class UserDictModel(Typed):
             # Default dict of users that should convert to User objects
             users: Dict[str, User] = {
                 "admin": {"name": "Admin User", "role": "admin"},
@@ -1077,7 +1077,7 @@ class TestDefaultValueValidation:
     def test_optional_default_values_with_none(self):
         """Test that Optional fields with None defaults work correctly."""
 
-        class OptionalModel(DataModel):
+        class OptionalModel(Typed):
             required: str
             optional_str: Optional[str] = None
             optional_int: Optional[int] = None
@@ -1090,7 +1090,7 @@ class TestDefaultValueValidation:
     def test_union_default_values_conversion(self):
         """Test that Union type default values are handled correctly."""
 
-        class UnionDefaultModel(DataModel):
+        class UnionDefaultModel(Typed):
             value: Union[int, str] = "42"  # Should try int first, convert to int
             mixed: Union[str, int] = 42    # Should try str first, keep as int if str conversion fails
 
@@ -1104,7 +1104,7 @@ class TestDefaultValueValidation:
         """Test that default_factory values are validated to be callable."""
 
         # Valid default factory
-        class ValidFactoryModel(DataModel):
+        class ValidFactoryModel(Typed):
             items: list = field(default_factory=list)
             data: dict = field(default_factory=dict)
 
@@ -1114,13 +1114,13 @@ class TestDefaultValueValidation:
 
         # Invalid default factory (not callable)
         with pytest.raises(TypeError, match="default_factory.*must be callable"):
-            class InvalidFactoryModel(DataModel):
+            class InvalidFactoryModel(Typed):
                 items: list = field(default_factory="not_callable")  # Not callable
 
     def test_enum_default_values_conversion(self):
         """Test that enum default values are properly handled."""
 
-        class EnumDefaultModel(DataModel):
+        class EnumDefaultModel(Typed):
             status: SimpleEnum = "VALUE_A"  # String that should convert to enum
 
         model = EnumDefaultModel()
@@ -1130,15 +1130,15 @@ class TestDefaultValueValidation:
     def test_deeply_nested_default_conversion(self):
         """Test conversion of deeply nested default structures."""
 
-        class Item(DataModel):
+        class Item(Typed):
             name: str
             value: int
 
-        class Category(DataModel):
+        class Category(Typed):
             name: str
             items: List[Item]
 
-        class Inventory(DataModel):
+        class Inventory(Typed):
             # Complex nested default structure
             categories: Dict[str, Category] = {
                 "electronics": {
@@ -1167,7 +1167,7 @@ class TestDefaultValueValidation:
     def test_default_value_validation_with_custom_validation(self):
         """Test that default values pass custom validation methods."""
 
-        class ValidatedDefaultModel(DataModel):
+        class ValidatedDefaultModel(Typed):
             count: int = 5  # Valid default
 
             def validate(self):
@@ -1180,7 +1180,7 @@ class TestDefaultValueValidation:
 
         # Test that invalid defaults would be caught
         with pytest.raises(TypeError, match="Invalid default value"):
-            class InvalidValidatedDefaultModel(DataModel):
+            class InvalidValidatedDefaultModel(Typed):
                 count: int = "invalid"  # Will fail conversion and validation
 
                 def validate(self):
@@ -1192,20 +1192,20 @@ class TestAutoDataclass:
     """Test automatic dataclass transformation."""
 
     def test_automatic_dataclass_transformation(self):
-        """Test that DataModel subclasses automatically become dataclasses."""
+        """Test that Typed subclasses automatically become dataclasses."""
 
         # Define a class without @dataclass decorator
-        class AutoDataModel(DataModel):
+        class AutoTyped(Typed):
             name: str
             age: int
             active: bool = True
 
         # Should automatically have dataclass functionality
-        assert hasattr(AutoDataModel, "__dataclass_fields__")
-        assert len(AutoDataModel.__dataclass_fields__) == 3
+        assert hasattr(AutoTyped, "__dataclass_fields__")
+        assert len(AutoTyped.__dataclass_fields__) == 3
 
         # Should be able to instantiate like a dataclass
-        model = AutoDataModel(name="Test", age=25)
+        model = AutoTyped(name="Test", age=25)
         assert model.name == "Test"
         assert model.age == 25
         assert model.active is True
@@ -1217,7 +1217,7 @@ class TestAutoDataclass:
 
         # Should work with from_dict
         data = {"name": "John", "age": 30, "active": False}
-        model2 = AutoDataModel.from_dict(data)
+        model2 = AutoTyped.from_dict(data)
         assert model2.name == "John"
         assert model2.age == 30
         assert model2.active is False
@@ -1230,12 +1230,12 @@ class TestAutoDataclass:
         """Test that multiple auto-dataclass models work independently."""
 
         # First auto dataclass model
-        class Model1(DataModel):
+        class Model1(Typed):
             title: str
             count: int = 0
 
         # Second auto dataclass model (no decorator)
-        class Model2(DataModel):
+        class Model2(Typed):
             name: str
             value: float = 1.0
 
@@ -1246,7 +1246,7 @@ class TestAutoDataclass:
         assert hasattr(model1, "__dataclass_fields__")
         assert hasattr(model2, "__dataclass_fields__")
 
-        # Both should support DataModel functionality
+        # Both should support Typed functionality
         model1_dict = model1.to_dict()
         model2_dict = model2.to_dict()
 
@@ -1256,7 +1256,7 @@ class TestAutoDataclass:
     def test_auto_dataclass_with_complex_types(self):
         """Test auto-dataclass with complex field types."""
 
-        class ComplexAutoModel(DataModel):
+        class ComplexAutoModel(Typed):
             name: str = "default"
             tags: list = field(default_factory=list)
             metadata: Optional[dict] = None
@@ -1290,7 +1290,7 @@ class TestTypeValidation:
     def test_basic_type_validation_success(self):
         """Test that correct types pass validation."""
 
-        class TypedModel(DataModel):
+        class TypedModel(Typed):
             name: str
             age: int
             active: bool
@@ -1304,7 +1304,7 @@ class TestTypeValidation:
     def test_basic_type_conversion_success(self):
         """Test that compatible types are automatically converted."""
 
-        class TypedModel(DataModel):
+        class TypedModel(Typed):
             name: str
             age: int
 
@@ -1325,7 +1325,7 @@ class TestTypeValidation:
     def test_optional_field_validation(self):
         """Test validation with Optional fields."""
 
-        class OptionalModel(DataModel):
+        class OptionalModel(Typed):
             required: str
             optional: Optional[int] = None
 
@@ -1344,7 +1344,7 @@ class TestTypeValidation:
     def test_union_field_validation(self):
         """Test validation with Union types."""
 
-        class UnionModel(DataModel):
+        class UnionModel(Typed):
             union_field: Union[int, str]
 
         # Should work with int
@@ -1363,7 +1363,7 @@ class TestTypeValidation:
         """Test validation with generic types like List, Dict."""
         from typing import Dict, List
 
-        class GenericModel(DataModel):
+        class GenericModel(Typed):
             items: List[str] = field(default_factory=list)
             mapping: Dict[str, int] = field(default_factory=dict)
 
@@ -1384,34 +1384,34 @@ class TestTypeValidation:
     def test_enum_type_validation(self):
         """Test validation with enum types."""
         # Should work with correct enum values
-        model = EnumDataModel(status=SimpleEnum.VALUE_A)
+        model = EnumTyped(status=SimpleEnum.VALUE_A)
         assert model.status == SimpleEnum.VALUE_A
 
         # Should work with valid enum string conversion
-        model = EnumDataModel(status="VALUE_A")  # AutoEnum expects the name, not auto() value
+        model = EnumTyped(status="VALUE_A")  # AutoEnum expects the name, not auto() value
         assert model.status == SimpleEnum.VALUE_A
         assert isinstance(model.status, SimpleEnum)
 
         # Should fail with invalid enum string
         with pytest.raises(ValueError, match="Could not find enum with value 'not_an_enum'"):
-            EnumDataModel(status="not_an_enum")
+            EnumTyped(status="not_an_enum")
 
-    def test_nested_datamodel_validation(self):
-        """Test validation with nested DataModel objects."""
-        user = SimpleDataModel(name="John", age=30, active=True)
+    def test_nested_Typed_validation(self):
+        """Test validation with nested Typed objects."""
+        user = SimpleTyped(name="John", age=30, active=True)
 
         # Should work with correct nested object
-        model = NestedDataModel(user=user)
+        model = NestedTyped(user=user)
         assert model.user.name == "John"
 
         # Should fail with wrong type for nested field
-        with pytest.raises(TypeError, match="Field 'user' expected type.*SimpleDataModel.*got str"):
-            NestedDataModel(user="not_a_datamodel")
+        with pytest.raises(TypeError, match="Field 'user' expected type.*SimpleTyped.*got str"):
+            NestedTyped(user="not_a_Typed")
 
     def test_type_validation_with_custom_validation(self):
         """Test that type validation works together with custom validation."""
 
-        class CustomValidationModel(DataModel):
+        class CustomValidationModel(Typed):
             name: str
             age: int
 
@@ -1435,7 +1435,7 @@ class TestTypeValidation:
     def test_consistent_type_conversion_behavior(self):
         """Test that both from_dict and constructor perform consistent type conversion."""
 
-        class ConversionModel(DataModel):
+        class ConversionModel(Typed):
             name: str
             age: int
 
@@ -1455,73 +1455,73 @@ class TestTypeValidation:
         assert model1.to_dict() == model2.to_dict()
 
 
-class TestNestedDataModelConversion:
-    """Test automatic nested DataModel conversion in constructor."""
+class TestNestedTypedConversion:
+    """Test automatic nested Typed conversion in constructor."""
 
-    def test_constructor_dict_to_nested_datamodel(self):
-        """Test that constructor automatically converts dicts to nested DataModel objects."""
+    def test_constructor_dict_to_nested_Typed(self):
+        """Test that constructor automatically converts dicts to nested Typed objects."""
         # Single nested conversion
-        model = NestedDataModel(user={"name": "John", "age": 30})
-        assert isinstance(model.user, SimpleDataModel)
+        model = NestedTyped(user={"name": "John", "age": 30})
+        assert isinstance(model.user, SimpleTyped)
         assert model.user.name == "John"
         assert model.user.age == 30
         assert model.user.active is True  # default value
 
     def test_constructor_multiple_nested_conversion(self):
         """Test constructor with multiple nested dict conversions."""
-        model = NestedDataModel(
+        model = NestedTyped(
             user={"name": "John", "age": 30, "active": False}, metadata={"name": "Meta", "age": 25}
         )
-        assert isinstance(model.user, SimpleDataModel)
-        assert isinstance(model.metadata, SimpleDataModel)
+        assert isinstance(model.user, SimpleTyped)
+        assert isinstance(model.metadata, SimpleTyped)
         assert model.user.name == "John"
         assert model.user.active is False
         assert model.metadata.name == "Meta"
         assert model.metadata.active is True  # default
 
     def test_constructor_mixed_instance_and_dict(self):
-        """Test constructor with mix of DataModel instance and dict."""
-        user_instance = SimpleDataModel(name="InstanceUser", age=35)
-        model = NestedDataModel(user=user_instance, metadata={"name": "DictMeta", "age": 28})
+        """Test constructor with mix of Typed instance and dict."""
+        user_instance = SimpleTyped(name="InstanceUser", age=35)
+        model = NestedTyped(user=user_instance, metadata={"name": "DictMeta", "age": 28})
         assert model.user is user_instance
-        assert isinstance(model.metadata, SimpleDataModel)
+        assert isinstance(model.metadata, SimpleTyped)
         assert model.user.name == "InstanceUser"
         assert model.metadata.name == "DictMeta"
 
     def test_constructor_optional_nested_with_none(self):
         """Test constructor with Optional nested field set to None."""
-        model = NestedDataModel(user={"name": "OnlyUser", "age": 40}, metadata=None)
-        assert isinstance(model.user, SimpleDataModel)
+        model = NestedTyped(user={"name": "OnlyUser", "age": 40}, metadata=None)
+        assert isinstance(model.user, SimpleTyped)
         assert model.user.name == "OnlyUser"
         assert model.metadata is None
 
     def test_constructor_nested_conversion_works(self):
         """Test that nested objects also perform automatic type conversion."""
         # Type conversion should work in nested object
-        model = NestedDataModel(user={"name": 123, "age": 30})
+        model = NestedTyped(user={"name": 123, "age": 30})
         assert model.user.name == "123"  # int converted to str
         assert isinstance(model.user.name, str)
         assert model.user.age == 30
 
         # String to int conversion should work in nested age field
-        model = NestedDataModel(user={"name": "John", "age": "30"})
+        model = NestedTyped(user={"name": "John", "age": "30"})
         assert model.user.name == "John"
         assert model.user.age == 30  # str converted to int
         assert isinstance(model.user.age, int)
 
         # Invalid conversion should still fail with type validation error
         with pytest.raises(TypeError, match="Field 'age' expected type.*int.*got str"):
-            NestedDataModel(user={"name": "John", "age": "not_a_number"})
+            NestedTyped(user={"name": "John", "age": "not_a_number"})
 
     def test_from_dict_still_does_type_conversion(self):
         """Test that from_dict still does type conversion (different from constructor)."""
         # from_dict should convert types
-        model = NestedDataModel.from_dict(
+        model = NestedTyped.from_dict(
             {
                 "user": {"name": "John", "age": "30"}  # string age gets converted
             }
         )
-        assert isinstance(model.user, SimpleDataModel)
+        assert isinstance(model.user, SimpleTyped)
         assert model.user.name == "John"
         assert model.user.age == 30  # converted from string
         assert isinstance(model.user.age, int)
@@ -1529,11 +1529,11 @@ class TestNestedDataModelConversion:
     def test_constructor_and_from_dict_consistent_behavior(self):
         """Test that constructor and from_dict have consistent behavior."""
         # Both constructor and from_dict should convert types consistently
-        model1 = NestedDataModel(user={"name": "John", "age": "30"})  # string age converts
+        model1 = NestedTyped(user={"name": "John", "age": "30"})  # string age converts
         assert model1.user.age == 30
         assert isinstance(model1.user.age, int)
 
-        model2 = NestedDataModel.from_dict({"user": {"name": "John", "age": "30"}})
+        model2 = NestedTyped.from_dict({"user": {"name": "John", "age": "30"}})
         assert model2.user.age == 30  # string converted to int
         assert isinstance(model2.user.age, int)
 
@@ -1541,18 +1541,18 @@ class TestNestedDataModelConversion:
         assert model1.to_dict() == model2.to_dict()
 
     def test_deeply_nested_conversion(self):
-        """Test conversion with deeply nested DataModel objects."""
+        """Test conversion with deeply nested Typed objects."""
         # Create a more complex nested structure for testing
         complex_data = {
             "user": {"name": "John", "age": 30},
             "metadata": {"name": "Meta", "age": 25, "active": False},
         }
 
-        model = NestedDataModel(**complex_data)
+        model = NestedTyped(**complex_data)
 
         # Verify all levels are properly converted and validated
-        assert isinstance(model.user, SimpleDataModel)
-        assert isinstance(model.metadata, SimpleDataModel)
+        assert isinstance(model.user, SimpleTyped)
+        assert isinstance(model.metadata, SimpleTyped)
         assert model.user.name == "John"
         assert model.metadata.active is False
 
@@ -1562,7 +1562,7 @@ class TestValidateCall:
 
     def test_basic_validate_functionality(self):
         """Test basic validate functionality with type conversion."""
-        from morphic.datamodel import validate
+        from morphic.typed import validate
 
         @validate
         def add_numbers(a: int, b: int) -> int:
@@ -1583,7 +1583,7 @@ class TestValidateCall:
 
     def test_validate_without_parentheses(self):
         """Test validate decorator used without parentheses."""
-        from morphic.datamodel import validate
+        from morphic.typed import validate
 
         @validate
         def multiply(x: float, y: float) -> float:
@@ -1596,7 +1596,7 @@ class TestValidateCall:
 
     def test_validate_with_defaults(self):
         """Test validate with default parameter values."""
-        from morphic.datamodel import validate
+        from morphic.typed import validate
 
         @validate
         def process_data(name: str, count: int = 10) -> str:
@@ -1609,46 +1609,46 @@ class TestValidateCall:
         result = process_data("test")
         assert result == "Processing 10 items: test"
 
-    def test_validate_with_datamodel_types(self):
-        """Test validate with DataModel type arguments."""
-        from morphic.datamodel import validate
+    def test_validate_with_Typed_types(self):
+        """Test validate with Typed type arguments."""
+        from morphic.typed import validate
 
         @validate
-        def create_user(user_data: SimpleDataModel) -> SimpleDataModel:
+        def create_user(user_data: SimpleTyped) -> SimpleTyped:
             return user_data
 
-        # Dict should be automatically converted to SimpleDataModel
+        # Dict should be automatically converted to SimpleTyped
         result = create_user({"name": "John", "age": "30", "active": True})
-        assert isinstance(result, SimpleDataModel)
+        assert isinstance(result, SimpleTyped)
         assert result.name == "John"
         assert result.age == 30
         assert isinstance(result.age, int)  # Converted from string
         assert result.active is True
 
-        # Existing DataModel object should pass through unchanged
-        user = SimpleDataModel(name="Jane", age=25)
+        # Existing Typed object should pass through unchanged
+        user = SimpleTyped(name="Jane", age=25)
         result = create_user(user)
-        assert isinstance(result, SimpleDataModel)
+        assert isinstance(result, SimpleTyped)
         assert result.name == "Jane"
         assert result.age == 25
 
     def test_validate_with_list_types(self):
         """Test validate with List type annotations."""
-        from morphic.datamodel import validate
+        from morphic.typed import validate
 
         @validate
-        def process_users(users: List[SimpleDataModel]) -> int:
+        def process_users(users: List[SimpleTyped]) -> int:
             return len(users)
 
-        # List of dicts should be converted to list of DataModel objects
+        # List of dicts should be converted to list of Typed objects
         result = process_users([
             {"name": "John", "age": "30"},
             {"name": "Jane", "age": "25"}
         ])
         assert result == 2
 
-        # Mixed list with dict and DataModel object
-        user = SimpleDataModel(name="Bob", age=35)
+        # Mixed list with dict and Typed object
+        user = SimpleTyped(name="Bob", age=35)
         result = process_users([
             {"name": "John", "age": "30"},
             user
@@ -1657,7 +1657,7 @@ class TestValidateCall:
 
     def test_validate_with_optional_types(self):
         """Test validate with Optional type annotations."""
-        from morphic.datamodel import validate
+        from morphic.typed import validate
         from typing import Optional
 
         @validate
@@ -1680,7 +1680,7 @@ class TestValidateCall:
 
     def test_validate_with_union_types(self):
         """Test validate with Union type annotations."""
-        from morphic.datamodel import validate
+        from morphic.typed import validate
         from typing import Union
 
         @validate
@@ -1701,7 +1701,7 @@ class TestValidateCall:
 
     def test_validate_validation_errors(self):
         """Test validate raises ValidationError for invalid inputs."""
-        from morphic.datamodel import validate, ValidationError
+        from morphic.typed import validate, ValidationError
 
         @validate
         def divide(a: int, b: int) -> float:
@@ -1716,7 +1716,7 @@ class TestValidateCall:
 
     def test_validate_with_return_validation(self):
         """Test validate with return value validation."""
-        from morphic.datamodel import validate, ValidationError
+        from morphic.typed import validate, ValidationError
 
         @validate(validate_return=True)
         def get_name(user_id: int) -> str:
@@ -1735,7 +1735,7 @@ class TestValidateCall:
 
     def test_validate_with_default_validation(self):
         """Test validate validates default parameter values."""
-        from morphic.datamodel import validate, ValidationError
+        from morphic.typed import validate, ValidationError
 
         # Valid defaults should work
         @validate
@@ -1753,7 +1753,7 @@ class TestValidateCall:
 
     def test_validate_preserves_function_metadata(self):
         """Test that validate preserves function metadata."""
-        from morphic.datamodel import validate
+        from morphic.typed import validate
 
         @validate
         def documented_function(x: int, y: int) -> int:
@@ -1770,7 +1770,7 @@ class TestValidateCall:
 
     def test_validate_with_arbitrary_types(self):
         """Test validate with arbitrary types (always enabled)."""
-        from morphic.datamodel import validate
+        from morphic.typed import validate
 
         # Should allow any types with automatic conversion
         @validate
@@ -1787,7 +1787,7 @@ class TestValidateCall:
 
     def test_validate_with_no_annotations(self):
         """Test validate with functions that have no type annotations."""
-        from morphic.datamodel import validate
+        from morphic.typed import validate
 
         @validate
         def no_annotations(a, b):
@@ -1802,7 +1802,7 @@ class TestValidateCall:
 
     def test_validate_with_varargs_kwargs(self):
         """Test validate with *args and **kwargs."""
-        from morphic.datamodel import validate
+        from morphic.typed import validate
 
         @validate
         def flexible_function(a: int, *args, b: str = "default", **kwargs):
@@ -1824,15 +1824,15 @@ class TestValidateCall:
         assert "a=5" in result
         assert "b=custom" in result
 
-    def test_validate_with_nested_datamodels(self):
-        """Test validate with nested DataModel structures."""
-        from morphic.datamodel import validate
+    def test_validate_with_nested_Typeds(self):
+        """Test validate with nested Typed structures."""
+        from morphic.typed import validate
 
         @validate
-        def create_nested(data: NestedDataModel) -> str:
+        def create_nested(data: NestedTyped) -> str:
             return f"User: {data.user.name}, age {data.user.age}"
 
-        # Should handle deeply nested dict-to-DataModel conversion
+        # Should handle deeply nested dict-to-Typed conversion
         result = create_nested({
             "user": {"name": "John", "age": "30"},
             "metadata": {"name": "Meta", "age": "25"}
@@ -1841,7 +1841,7 @@ class TestValidateCall:
 
     def test_validate_error_messages(self):
         """Test that validate provides clear error messages."""
-        from morphic.datamodel import validate, ValidationError
+        from morphic.typed import validate, ValidationError
 
         @validate
         def test_function(name: str, age: int) -> None:
@@ -1857,7 +1857,7 @@ class TestValidateCall:
 
     def test_validate_with_complex_types(self):
         """Test validate with complex type annotations."""
-        from morphic.datamodel import validate
+        from morphic.typed import validate
         from typing import Dict, List
 
         @validate
@@ -1876,7 +1876,7 @@ class TestValidateCall:
 
     def test_validate_performance_with_repeated_calls(self):
         """Test that validate doesn't have excessive overhead on repeated calls."""
-        from morphic.datamodel import validate
+        from morphic.typed import validate
         import time
 
         @validate
@@ -1898,7 +1898,7 @@ class TestValidateCall:
 
     def test_validate_enhanced_default_validation(self):
         """Test enhanced default parameter validation for complex types."""
-        from morphic.datamodel import validate, ValidationError
+        from morphic.typed import validate, ValidationError
         from typing import List, Dict, Optional
 
         # Test invalid list elements are caught
@@ -1931,27 +1931,27 @@ class TestValidateCall:
         assert result == {"a": 1, "b": 2}
         assert all(isinstance(v, int) for v in result.values())
 
-        # Test nested DataModel validation
+        # Test nested Typed validation
         with pytest.raises(ValidationError, match="Invalid list element"):
             @validate
-            def bad_nested(users: List[SimpleDataModel] = [{"name": "John", "age": "invalid"}]):
+            def bad_nested(users: List[SimpleTyped] = [{"name": "John", "age": "invalid"}]):
                 return users
 
-        # Test valid nested DataModel conversion
+        # Test valid nested Typed conversion
         @validate
-        def good_nested(users: List[SimpleDataModel] = [{"name": "John", "age": "30"}]):
+        def good_nested(users: List[SimpleTyped] = [{"name": "John", "age": "30"}]):
             return users
 
         result = good_nested()
         assert len(result) == 1
-        assert isinstance(result[0], SimpleDataModel)
+        assert isinstance(result[0], SimpleTyped)
         assert result[0].name == "John"
         assert result[0].age == 30
         assert isinstance(result[0].age, int)
 
     def test_validate_default_validation_edge_cases(self):
         """Test edge cases for default parameter validation."""
-        from morphic.datamodel import validate, ValidationError
+        from morphic.typed import validate, ValidationError
         from typing import Optional, Union
 
         # Test None validation for Optional types
@@ -1983,7 +1983,7 @@ class TestValidateCall:
         assert result == 123  # Should convert to int first
         assert isinstance(result, int)
 
-        # Test boolean string conversion - note that runtime uses DataModel conversion
+        # Test boolean string conversion - note that runtime uses Typed conversion
         # which uses Python's bool() that treats non-empty strings as True
         @validate
         def bool_conversion(flag: bool = "true"):
@@ -1997,7 +1997,7 @@ class TestValidateCall:
             return flag
 
         # Python's bool("false") is True (non-empty string!)
-        # This is the current DataModel behavior - uses Python's built-in bool()
+        # This is the current Typed behavior - uses Python's built-in bool()
         assert bool_false() is True
 
         # Only empty string converts to False with Python's bool()
@@ -2015,7 +2015,7 @@ class TestValidateCall:
         # Test complex nested structures
         @validate
         def complex_nested(
-            data: Dict[str, List[SimpleDataModel]] = {
+            data: Dict[str, List[SimpleTyped]] = {
                 "group1": [{"name": "Alice", "age": "25"}],
                 "group2": [{"name": "Bob", "age": "30"}]
             }
@@ -2026,7 +2026,7 @@ class TestValidateCall:
         assert isinstance(result, dict)
         assert "group1" in result
         assert isinstance(result["group1"], list)
-        assert isinstance(result["group1"][0], SimpleDataModel)
+        assert isinstance(result["group1"][0], SimpleTyped)
         assert result["group1"][0].age == 25
         assert isinstance(result["group1"][0].age, int)
 
@@ -2034,7 +2034,7 @@ class TestValidateCall:
         with pytest.raises(ValidationError, match="Invalid dict entry"):
             @validate
             def bad_complex_nested(
-                data: Dict[str, List[SimpleDataModel]] = {
+                data: Dict[str, List[SimpleTyped]] = {
                     "group1": [{"name": "Alice", "age": "invalid_age"}]
                 }
             ):
