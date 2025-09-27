@@ -270,23 +270,33 @@ class AutoEnum(str, Enum):
         """Convert enum dictionary values to strings."""
         return {k: (str(v) if isinstance(v, cls) else v) for k, v in d.items()}
 
+    @staticmethod
+    def create(name: str, values: List[str]) -> type["AutoEnum"]:
+        """
+        Dynamically creates an AutoEnum subclass named `name` from a list of strings.
 
-def make_autoenum(name: str, values: List[str]) -> type[AutoEnum]:
-    """
-    Dynamically creates an AutoEnum subclass named `name` from a list of strings.
-    """
+        Args:
+            name: The name for the new enum class
+            values: List of string values to become enum members
 
-    # sanitize Python identifiers: letters, digits and underscores only
-    def to_identifier(s: str) -> str:
-        # replace non-word chars with underscore, strip leading digits
-        ident: str = re.sub(r"\W+", "_", s).lstrip("0123456789").lstrip("_").rstrip("_")
-        ident_capitalize: str = "_".join([x.capitalize() for x in ident.split("_")])
-        if s != ident:
-            warnings.warn(
-                f"We have converted '{s}' to '{ident_capitalize}' to make it a valid Python identifier"
-            )
-        return ident_capitalize
+        Returns:
+            A new AutoEnum subclass
 
-    members = {to_identifier(v): auto() for v in values}
-    # Enum functional constructor:
-    return AutoEnum(name, members)
+        Example:
+            Status = AutoEnum.create('Status', ['pending', 'running', 'complete'])
+        """
+
+        # sanitize Python identifiers: letters, digits and underscores only
+        def to_identifier(s: str) -> str:
+            # replace non-word chars with underscore, strip leading digits
+            ident: str = re.sub(r"\W+", "_", s).lstrip("0123456789").lstrip("_").rstrip("_")
+            ident_capitalize: str = "_".join([x.capitalize() for x in ident.split("_")])
+            if s != ident:
+                warnings.warn(
+                    f"We have converted '{s}' to '{ident_capitalize}' to make it a valid Python identifier"
+                )
+            return ident_capitalize
+
+        members = {to_identifier(v): auto() for v in values}
+        # Enum functional constructor:
+        return AutoEnum(name, members)

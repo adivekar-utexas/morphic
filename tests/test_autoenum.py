@@ -5,7 +5,7 @@ from typing import List
 
 import pytest
 
-from morphic.autoenum import AutoEnum, alias, auto, make_autoenum
+from morphic.autoenum import AutoEnum, alias, auto
 
 # Try importing pydantic, if not available, we'll skip those tests
 try:
@@ -223,18 +223,18 @@ def test_enum_iteration():
             "Los Angeles" in City
 
 
-def test_make_autoenum():
-    """Test make_autoenum function"""
+def test_autoenum_create():
+    """Test AutoEnum.create static method"""
 
     with pytest.warns(
         UserWarning, match="We have converted 'Value 1' to 'Value_1' to make it a valid Python identifier"
     ):
-        TestEnum = make_autoenum("TestEnum", ["Value 1", "Value2", "Value3"])
+        TestEnum = AutoEnum.create("TestEnum", ["Value 1", "Value2", "Value3"])
         assert TestEnum.Value_1 == TestEnum("Value1")
         assert TestEnum.Value2 == TestEnum("Value2")
         assert TestEnum.Value3 == TestEnum("Value3")
 
-    Color = make_autoenum("Color", ["red", "green   grass", "Blue33", "Yellow!!!!!!!!!!!!3"])
+    Color = AutoEnum.create("Color", ["red", "green   grass", "Blue33", "Yellow!!!!!!!!!!!!3"])
     assert Color.Red == Color("Red")
     assert Color.Green_Grass == Color("Green-Grass")
     assert Color.Blue33 == Color("Blue33")
