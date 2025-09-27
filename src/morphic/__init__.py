@@ -1,7 +1,110 @@
 """Morphic: Dynamic Python utilities for class registration, creation, and type checking."""
 
-from .registry import Registry
 from .autoenum import AutoEnum, alias, auto
-from .typed import Typed, validate, ValidationError
+from .function import (
+    FunctionSpec,
+    call_str_to_params,
+    filter_kwargs,
+    fn_str,
+    get_current_fn_name,
+    get_fn_args,
+    get_fn_spec,
+    is_function,
+    params_to_call_str,
+    parsed_fn_source,
+    wrap_fn_output,
+)
 
-__all__ = ["Registry", "AutoEnum", "alias", "auto", "Typed", "validate", "ValidationError"]
+# Import utilities organized by module
+from .imports import optional_dependency
+from .registry import Registry
+from .structs import (
+    all_are_false,
+    all_are_none,
+    all_are_not_none,
+    all_are_true,
+    any_are_none,
+    any_are_not_none,
+    as_list,
+    as_set,
+    as_tuple,
+    default,
+    is_empty_list,
+    is_empty_list_like,
+    is_list_like,
+    is_list_or_set_like,
+    is_not_empty_list,
+    is_not_empty_list_like,
+    is_set_like,
+    keep_values,
+    multiple_are_none,
+    multiple_are_not_none,
+    none_count,
+    not_impl,
+    not_none_count,
+    only_item,
+    only_key,
+    only_value,
+    remove_nulls,
+    remove_values,
+    set_intersection,
+    set_union,
+)
+from .typed import Typed, ValidationError, validate
+
+__all__ = [
+    # Core classes
+    "Registry",
+    "AutoEnum",
+    "alias",
+    "auto",
+    "Typed",
+    "validate",
+    "ValidationError",
+    # Import utilities
+    "optional_dependency",
+    # Language utilities
+    "default",
+    "any_are_none",
+    "all_are_not_none",
+    "all_are_none",
+    "any_are_not_none",
+    "none_count",
+    "not_none_count",
+    "multiple_are_none",
+    "multiple_are_not_none",
+    "all_are_true",
+    "all_are_false",
+    # Struct utilities
+    "not_impl",
+    "as_list",
+    "as_tuple",
+    "as_set",
+    "is_list_like",
+    "is_set_like",
+    "is_list_or_set_like",
+    "is_not_empty_list_like",
+    "is_empty_list_like",
+    "is_not_empty_list",
+    "is_empty_list",
+    "set_union",
+    "set_intersection",
+    "keep_values",
+    "remove_values",
+    "remove_nulls",
+    "only_item",
+    "only_key",
+    "only_value",
+    # Function utilities
+    "fn_str",
+    "get_current_fn_name",
+    "is_function",
+    "call_str_to_params",
+    "params_to_call_str",
+    "wrap_fn_output",
+    "parsed_fn_source",
+    "FunctionSpec",
+    "get_fn_spec",
+    "get_fn_args",
+    "filter_kwargs",
+]

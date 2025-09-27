@@ -1055,6 +1055,7 @@ class TestRegistry:
 
         class TextProcessor(Processor, ABC):
             """Abstract intermediate class."""
+
             @abstractmethod
             def normalize(self, text):
                 pass
@@ -1109,7 +1110,10 @@ class TestRegistry:
                 return f"SMS via {self.provider}"
 
         # When multiple subclasses are registered, the 'of' method should raise TypeError
-        with pytest.raises(TypeError, match="Cannot instantiate using registry_key 'notification' because multiple subclasses"):
+        with pytest.raises(
+            TypeError,
+            match="Cannot instantiate using registry_key 'notification' because multiple subclasses",
+        ):
             Service.of("notification", provider="custom")
 
     def test_of_factory_method_inheritance_chain(self):
@@ -1138,7 +1142,7 @@ class TestRegistry:
                 self.radius = radius
 
             def area(self):
-                return 3.14159 * self.radius ** 2
+                return 3.14159 * self.radius**2
 
         # Test factory creation across inheritance chain
         rect = Shape.of("Rectangle", width=10, height=5)
