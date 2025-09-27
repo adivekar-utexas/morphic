@@ -1555,3 +1555,487 @@ class TestNestedDataModelConversion:
         assert isinstance(model.metadata, SimpleDataModel)
         assert model.user.name == "John"
         assert model.metadata.active is False
+
+
+class TestValidateCall:
+    """Comprehensive tests for validate decorator."""
+
+    def test_basic_validate_functionality(self):
+        """Test basic validate functionality with type conversion."""
+        from morphic.datamodel import validate
+
+        @validate
+        def add_numbers(a: int, b: int) -> int:
+            return a + b
+
+        # Test type conversion from strings
+        result = add_numbers("5", "10")
+        assert result == 15
+        assert isinstance(result, int)
+
+        # Test with actual int arguments
+        result = add_numbers(3, 7)
+        assert result == 10
+
+        # Test mixed types that can be converted
+        result = add_numbers("5", 10)
+        assert result == 15
+
+    def test_validate_without_parentheses(self):
+        """Test validate decorator used without parentheses."""
+        from morphic.datamodel import validate
+
+        @validate
+        def multiply(x: float, y: float) -> float:
+            return x * y
+
+        # Should work with type conversion
+        result = multiply("2.5", "4.0")
+        assert result == 10.0
+        assert isinstance(result, float)
+
+    def test_validate_with_defaults(self):
+        """Test validate with default parameter values."""
+        from morphic.datamodel import validate
+
+        @validate
+        def process_data(name: str, count: int = 10) -> str:
+            return f"Processing {count} items: {name}"
+
+        result = process_data("test", "5")
+        assert result == "Processing 5 items: test"
+
+        # Test with default value
+        result = process_data("test")
+        assert result == "Processing 10 items: test"
+
+    def test_validate_with_datamodel_types(self):
+        """Test validate with DataModel type arguments."""
+        from morphic.datamodel import validate
+
+        @validate
+        def create_user(user_data: SimpleDataModel) -> SimpleDataModel:
+            return user_data
+
+        # Dict should be automatically converted to SimpleDataModel
+        result = create_user({"name": "John", "age": "30", "active": True})
+        assert isinstance(result, SimpleDataModel)
+        assert result.name == "John"
+        assert result.age == 30
+        assert isinstance(result.age, int)  # Converted from string
+        assert result.active is True
+
+        # Existing DataModel object should pass through unchanged
+        user = SimpleDataModel(name="Jane", age=25)
+        result = create_user(user)
+        assert isinstance(result, SimpleDataModel)
+        assert result.name == "Jane"
+        assert result.age == 25
+
+    def test_validate_with_list_types(self):
+        """Test validate with List type annotations."""
+        from morphic.datamodel import validate
+
+        @validate
+        def process_users(users: List[SimpleDataModel]) -> int:
+            return len(users)
+
+        # List of dicts should be converted to list of DataModel objects
+        result = process_users([
+            {"name": "John", "age": "30"},
+            {"name": "Jane", "age": "25"}
+        ])
+        assert result == 2
+
+        # Mixed list with dict and DataModel object
+        user = SimpleDataModel(name="Bob", age=35)
+        result = process_users([
+            {"name": "John", "age": "30"},
+            user
+        ])
+        assert result == 2
+
+    def test_validate_with_optional_types(self):
+        """Test validate with Optional type annotations."""
+        from morphic.datamodel import validate
+        from typing import Optional
+
+        @validate
+        def greet_user(name: str, title: Optional[str] = None) -> str:
+            if title:
+                return f"Hello, {title} {name}"
+            return f"Hello, {name}"
+
+        # Test with None (should be valid for Optional)
+        result = greet_user("John", None)
+        assert result == "Hello, John"
+
+        # Test with default None
+        result = greet_user("Jane")
+        assert result == "Hello, Jane"
+
+        # Test with actual value
+        result = greet_user("Smith", "Dr.")
+        assert result == "Hello, Dr. Smith"
+
+    def test_validate_with_union_types(self):
+        """Test validate with Union type annotations."""
+        from morphic.datamodel import validate
+        from typing import Union
+
+        @validate
+        def format_value(value: Union[int, str]) -> str:
+            return f"Value: {value}"
+
+        # Test with int
+        result = format_value(42)
+        assert result == "Value: 42"
+
+        # Test with string
+        result = format_value("hello")
+        assert result == "Value: hello"
+
+        # Test with convertible string to int
+        result = format_value("123")
+        assert result == "Value: 123"  # Will be converted to int first
+
+    def test_validate_validation_errors(self):
+        """Test validate raises ValidationError for invalid inputs."""
+        from morphic.datamodel import validate, ValidationError
+
+        @validate
+        def divide(a: int, b: int) -> float:
+            return a / b
+
+        # Test invalid conversion
+        with pytest.raises(ValidationError, match="Argument 'a' expected type"):
+            divide("not_a_number", 5)
+
+        with pytest.raises(ValidationError, match="Argument 'b' expected type"):
+            divide(10, "also_not_a_number")
+
+    def test_validate_with_return_validation(self):
+        """Test validate with return value validation."""
+        from morphic.datamodel import validate, ValidationError
+
+        @validate(validate_return=True)
+        def get_name(user_id: int) -> str:
+            if user_id > 0:
+                return f"user_{user_id}"
+            else:
+                return 123  # Invalid return type
+
+        # Valid return
+        result = get_name(5)
+        assert result == "user_5"
+
+        # Invalid return should raise ValidationError
+        with pytest.raises(ValidationError, match="Return value expected type"):
+            get_name(0)
+
+    def test_validate_with_default_validation(self):
+        """Test validate validates default parameter values."""
+        from morphic.datamodel import validate, ValidationError
+
+        # Valid defaults should work
+        @validate
+        def process_items(items: List[str], count: int = 10) -> str:
+            return f"Processing {count} of {len(items)} items"
+
+        result = process_items(["a", "b", "c"])
+        assert result == "Processing 10 of 3 items"
+
+        # Invalid defaults should raise error at decoration time
+        with pytest.raises(ValidationError, match="Cannot convert"):
+            @validate
+            def bad_function(count: int = "not_a_number"):
+                return count
+
+    def test_validate_preserves_function_metadata(self):
+        """Test that validate preserves function metadata."""
+        from morphic.datamodel import validate
+
+        @validate
+        def documented_function(x: int, y: int) -> int:
+            """Add two numbers together."""
+            return x + y
+
+        # Should preserve function name and docstring
+        assert documented_function.__name__ == "documented_function"
+        assert documented_function.__doc__ == "Add two numbers together."
+
+        # Should have access to original function
+        assert hasattr(documented_function, 'raw_function')
+        assert documented_function.raw_function.__name__ == "documented_function"
+
+    def test_validate_with_arbitrary_types(self):
+        """Test validate with arbitrary types (always enabled)."""
+        from morphic.datamodel import validate
+
+        # Should allow any types with automatic conversion
+        @validate
+        def flexible_function(name: str, count: int) -> str:
+            return f"{name}: {count}"
+
+        # Basic types should work
+        result = flexible_function("test", 5)
+        assert result == "test: 5"
+
+        # Type conversion should work for basic types
+        result = flexible_function("test", "5")
+        assert result == "test: 5"
+
+    def test_validate_with_no_annotations(self):
+        """Test validate with functions that have no type annotations."""
+        from morphic.datamodel import validate
+
+        @validate
+        def no_annotations(a, b):
+            return a + b
+
+        # Should work without any validation
+        result = no_annotations(1, 2)
+        assert result == 3
+
+        result = no_annotations("hello", "world")
+        assert result == "helloworld"
+
+    def test_validate_with_varargs_kwargs(self):
+        """Test validate with *args and **kwargs."""
+        from morphic.datamodel import validate
+
+        @validate
+        def flexible_function(a: int, *args, b: str = "default", **kwargs):
+            return f"a={a}, args={args}, b={b}, kwargs={kwargs}"
+
+        # Test with only required parameter (a should be converted)
+        result = flexible_function("5")
+        assert "a=5" in result
+        assert "b=default" in result
+
+        # Test with keyword arguments
+        result = flexible_function("10", b="test", extra="value")
+        assert "a=10" in result
+        assert "b=test" in result
+        assert "extra" in result
+
+        # Test with positional arguments (note: Python signature binding behavior)
+        result = flexible_function("5", b="custom")
+        assert "a=5" in result
+        assert "b=custom" in result
+
+    def test_validate_with_nested_datamodels(self):
+        """Test validate with nested DataModel structures."""
+        from morphic.datamodel import validate
+
+        @validate
+        def create_nested(data: NestedDataModel) -> str:
+            return f"User: {data.user.name}, age {data.user.age}"
+
+        # Should handle deeply nested dict-to-DataModel conversion
+        result = create_nested({
+            "user": {"name": "John", "age": "30"},
+            "metadata": {"name": "Meta", "age": "25"}
+        })
+        assert result == "User: John, age 30"
+
+    def test_validate_error_messages(self):
+        """Test that validate provides clear error messages."""
+        from morphic.datamodel import validate, ValidationError
+
+        @validate
+        def test_function(name: str, age: int) -> None:
+            pass
+
+        # Test argument binding error
+        with pytest.raises(ValidationError, match="Invalid function arguments"):
+            test_function()  # Missing required arguments
+
+        # Test type validation error
+        with pytest.raises(ValidationError, match="Argument 'age' expected type"):
+            test_function("John", "definitely_not_a_number")
+
+    def test_validate_with_complex_types(self):
+        """Test validate with complex type annotations."""
+        from morphic.datamodel import validate
+        from typing import Dict, List
+
+        @validate
+        def process_mapping(data: Dict[str, List[int]]) -> int:
+            total = 0
+            for values in data.values():
+                total += sum(values)
+            return total
+
+        # Should handle complex nested type conversions
+        result = process_mapping({
+            "group1": ["1", "2", "3"],  # strings converted to ints
+            "group2": [4, 5, 6]         # already ints
+        })
+        assert result == 21  # 1+2+3+4+5+6
+
+    def test_validate_performance_with_repeated_calls(self):
+        """Test that validate doesn't have excessive overhead on repeated calls."""
+        from morphic.datamodel import validate
+        import time
+
+        @validate
+        def simple_add(a: int, b: int) -> int:
+            return a + b
+
+        # Time multiple calls to ensure reasonable performance
+        start_time = time.time()
+        for i in range(1000):
+            result = simple_add(i, i + 1)
+        end_time = time.time()
+
+        # Should complete 1000 calls in reasonable time (less than 1 second)
+        elapsed = end_time - start_time
+        assert elapsed < 1.0, f"Performance test failed: {elapsed:.3f} seconds for 1000 calls"
+
+        # Verify correctness wasn't compromised for speed
+        assert simple_add(5, 10) == 15
+
+    def test_validate_enhanced_default_validation(self):
+        """Test enhanced default parameter validation for complex types."""
+        from morphic.datamodel import validate, ValidationError
+        from typing import List, Dict, Optional
+
+        # Test invalid list elements are caught
+        with pytest.raises(ValidationError, match="Invalid list element at index 2"):
+            @validate
+            def bad_list(numbers: List[int] = ["1", "2", "invalid"]):
+                return numbers
+
+        # Test valid list conversion works
+        @validate
+        def good_list(numbers: List[int] = ["1", "2", "3"]):
+            return numbers
+
+        result = good_list()
+        assert result == [1, 2, 3]
+        assert all(isinstance(x, int) for x in result)
+
+        # Test invalid dict values are caught
+        with pytest.raises(ValidationError, match="Invalid dict entry"):
+            @validate
+            def bad_dict(mapping: Dict[str, int] = {"a": "1", "b": "invalid"}):
+                return mapping
+
+        # Test valid dict conversion works
+        @validate
+        def good_dict(mapping: Dict[str, int] = {"a": "1", "b": "2"}):
+            return mapping
+
+        result = good_dict()
+        assert result == {"a": 1, "b": 2}
+        assert all(isinstance(v, int) for v in result.values())
+
+        # Test nested DataModel validation
+        with pytest.raises(ValidationError, match="Invalid list element"):
+            @validate
+            def bad_nested(users: List[SimpleDataModel] = [{"name": "John", "age": "invalid"}]):
+                return users
+
+        # Test valid nested DataModel conversion
+        @validate
+        def good_nested(users: List[SimpleDataModel] = [{"name": "John", "age": "30"}]):
+            return users
+
+        result = good_nested()
+        assert len(result) == 1
+        assert isinstance(result[0], SimpleDataModel)
+        assert result[0].name == "John"
+        assert result[0].age == 30
+        assert isinstance(result[0].age, int)
+
+    def test_validate_default_validation_edge_cases(self):
+        """Test edge cases for default parameter validation."""
+        from morphic.datamodel import validate, ValidationError
+        from typing import Optional, Union
+
+        # Test None validation for Optional types
+        @validate
+        def optional_none(value: Optional[str] = None):
+            return value
+
+        result = optional_none()
+        assert result is None
+
+        # Test None validation for non-Optional types should fail
+        with pytest.raises(ValidationError, match="None not allowed for type"):
+            @validate
+            def non_optional_none(value: str = None):
+                return value
+
+        # Test Union type validation with invalid value
+        with pytest.raises(ValidationError, match="Could not convert"):
+            @validate
+            def bad_union(value: Union[int, bool] = "invalid_for_both"):
+                return value
+
+        # Test Union type validation with valid conversion
+        @validate
+        def good_union(value: Union[int, str] = "123"):
+            return value
+
+        result = good_union()
+        assert result == 123  # Should convert to int first
+        assert isinstance(result, int)
+
+        # Test boolean string conversion - note that runtime uses DataModel conversion
+        # which uses Python's bool() that treats non-empty strings as True
+        @validate
+        def bool_conversion(flag: bool = "true"):
+            return flag
+
+        # Python's bool("true") is True
+        assert bool_conversion() is True
+
+        @validate
+        def bool_false(flag: bool = "false"):
+            return flag
+
+        # Python's bool("false") is True (non-empty string!)
+        # This is the current DataModel behavior - uses Python's built-in bool()
+        assert bool_false() is True
+
+        # Only empty string converts to False with Python's bool()
+        @validate
+        def bool_empty(flag: bool = ""):
+            return flag
+
+        assert bool_empty() is False
+
+        with pytest.raises(ValidationError, match="Cannot convert"):
+            @validate
+            def invalid_bool(flag: bool = "maybe"):
+                return flag
+
+        # Test complex nested structures
+        @validate
+        def complex_nested(
+            data: Dict[str, List[SimpleDataModel]] = {
+                "group1": [{"name": "Alice", "age": "25"}],
+                "group2": [{"name": "Bob", "age": "30"}]
+            }
+        ):
+            return data
+
+        result = complex_nested()
+        assert isinstance(result, dict)
+        assert "group1" in result
+        assert isinstance(result["group1"], list)
+        assert isinstance(result["group1"][0], SimpleDataModel)
+        assert result["group1"][0].age == 25
+        assert isinstance(result["group1"][0].age, int)
+
+        # Test invalid complex nested structures
+        with pytest.raises(ValidationError, match="Invalid dict entry"):
+            @validate
+            def bad_complex_nested(
+                data: Dict[str, List[SimpleDataModel]] = {
+                    "group1": [{"name": "Alice", "age": "invalid_age"}]
+                }
+            ):
+                return data
