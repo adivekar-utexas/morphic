@@ -1,1329 +1,781 @@
 """Enhanced base configuration class with Pydantic-like functionality."""
 
-from dataclasses import Field, fields, MISSING
-from typing import Any, ClassVar, Dict, Type, TypeVar, Union, get_args, get_origin, Callable
-from functools import wraps
-import inspect
+import functools
+import textwrap
+from abc import ABC
+from pprint import pformat
+from typing import (
+    Any,
+    ClassVar,
+    Dict,
+    Optional,
+    Set,
+    Tuple,
+    TypeVar,
+)
+
+from pydantic import BaseModel, ConfigDict, ValidationError, validate_call
+
+
+def format_exception_msg(ex: Exception, short: bool = False, prefix: Optional[str] = None) -> str:
+    """
+    Format exception messages with optional traceback information.
+
+    Provides a utility for formatting exception messages with configurable detail levels
+    and optional prefixes. Used internally by Typed for enhanced error reporting.
+
+    Args:
+        ex (Exception): The exception to format.
+        short (bool, optional): Whether to use short format for traceback.
+            Defaults to False (full traceback).
+        prefix (Optional[str], optional): Optional prefix to add to the message.
+            Defaults to None.
+
+    Returns:
+        str: Formatted exception message with traceback information.
+
+    Examples:
+        ```python
+        try:
+            raise ValueError("Something went wrong")
+        except Exception as e:
+            # Short format
+            short_msg = format_exception_msg(e, short=True)
+            print(short_msg)
+            # "ValueError: 'Something went wrong'\\nTrace: file.py#123; "
+
+            # Full format with prefix
+            full_msg = format_exception_msg(e, prefix="Validation Error")
+            print(full_msg)
+            # "Validation Error: ValueError: 'Something went wrong'\\nTraceback:\\n\\tfile.py line 123, in function..."
+        ```
+
+    Note:
+        This is primarily an internal utility function used by Typed's error handling.
+        Reference: https://stackoverflow.com/a/64212552
+    """
+    ## Ref: https://stackoverflow.com/a/64212552
+    tb = ex.__traceback__
+    trace = []
+    while tb is not None:
+        trace.append(
+            {
+                "filename": tb.tb_frame.f_code.co_filename,
+                "function_name": tb.tb_frame.f_code.co_name,
+                "lineno": tb.tb_lineno,
+            }
+        )
+        tb = tb.tb_next
+    if prefix is not None:
+        out = f'{prefix}: {type(ex).__name__}: "{str(ex)}"'
+    else:
+        out = f'{type(ex).__name__}: "{str(ex)}"'
+    if short:
+        out += "\nTrace: "
+        for trace_line in trace:
+            out += f"{trace_line['filename']}#{trace_line['lineno']}; "
+    else:
+        out += "\nTraceback:"
+        for trace_line in trace:
+            out += f"\n\t{trace_line['filename']} line {trace_line['lineno']}, in {trace_line['function_name']}..."
+    return out.strip()
+
+
+class classproperty(property):
+    """
+    Descriptor that allows properties to be accessed at the class level.
+
+    Similar to the built-in `property` decorator, but works on classes rather than instances.
+    This allows defining computed properties that can be accessed directly on the class
+    without requiring an instance.
+
+    Examples:
+        ```python
+        class MyClass:
+            _name = "Example"
+
+            @classproperty
+            def name(cls):
+                return cls._name
+
+        # Access directly on class
+        print(MyClass.name)  # "Example"
+
+        # Also works on instances
+        instance = MyClass()
+        print(instance.name)  # "Example"
+        ```
+
+    Note:
+        This is used internally by Typed for class-level properties like `class_name`
+        and `param_names`. Reference: https://stackoverflow.com/a/13624858/4900327
+    """
+
+    def __get__(self, obj, objtype=None):
+        return super(classproperty, self).__get__(objtype)
+
+    def __set__(self, obj, value):
+        super(classproperty, self).__set__(type(obj), value)
+
+    def __delete__(self, obj):
+        super(classproperty, self).__delete__(type(obj))
+
+
+def _Typed_pformat(data: Any) -> str:
+    """
+    Pretty-format data structures for enhanced error messages.
+
+    Internal utility function that provides consistent, readable formatting for
+    data structures in error messages and debugging output.
+
+    Args:
+        data (Any): The data structure to format.
+
+    Returns:
+        str: Pretty-formatted string representation of the data.
+
+    Configuration:
+        Uses the following pprint settings for optimal readability:
+        - width=100: Maximum line width
+        - indent=2: Indentation level for nested structures
+        - depth=None: No depth limit for nested structures
+        - compact=False: Prioritize readability over compactness
+        - sort_dicts=False: Preserve original dict ordering
+        - underscore_numbers=True: Use underscores in large numbers
+
+    Note:
+        This is an internal utility function used by Typed's error handling
+        to provide readable representations of input data in error messages.
+    """
+    return pformat(
+        data, width=100, indent=2, depth=None, compact=False, sort_dicts=False, underscore_numbers=True
+    )
+
 
 T = TypeVar("T", bound="Typed")
 
 
-class Typed:
-    """Base class for all configuration classes with enhanced dict conversion and validation.
+class Typed(BaseModel, ABC):
+    """
+    Enhanced Pydantic BaseModel with advanced validation and utility features.
 
-    This class provides Pydantic-like functionality for dataclasses without external dependencies.
-    Subclasses automatically become dataclasses - no @dataclass decorator needed!
-    Validation is automatically called after instance creation.
+    Typed provides a powerful foundation for creating structured data models with automatic validation,
+    type conversion, serialization, and enhanced error handling. Built on top of Pydantic BaseModel,
+    it adds additional convenience methods and improved error reporting while maintaining full
+    compatibility with Pydantic's ecosystem.
 
     Features:
-    - Automatic dataclass transformation for subclasses
-    - Automatic type validation for all field types
-    - Automatic nested Typed conversion in constructor
-    - Automatic validation after instance creation
-    - Automatic type conversion from dictionaries
-    - **Default value validation and conversion at class definition time**
-    - **Automatic mutable default handling with default_factory**
-    - **Hierarchical default value conversion (nested Typeds, lists, dicts)**
-    - AutoEnum string conversion with fuzzy matching and aliases (if morphic.AutoEnum is available)
-    - Nested object support with validation
-    - Serialization/deserialization with filtering options
-    - Field caching for performance
-    - Copy with modifications
+        - **Enhanced Error Handling**: Detailed validation error messages with context
+        - **Type Validation**: Automatic type conversion and validation using Pydantic
+        - **Immutable Models**: Frozen models by default for thread safety
+        - **JSON Schema**: Automatic schema generation for API documentation
+        - **Serialization**: JSON and dict serialization with customizable options
+        - **Class Properties**: Convenient access to model metadata and field information
+        - **Registry Integration**: Compatible with morphic.Registry for factory patterns
 
-    Default Value Features:
-    - Default values are validated and converted at class definition time
-    - Invalid defaults raise clear errors when the class is defined
-    - Convertible defaults are automatically transformed (e.g., "25" -> 25 for int fields)
-    - Mutable defaults (lists, dicts, Typed objects) are automatically converted to default_factory
-    - Hierarchical structures in defaults are recursively converted
-    - Supports Optional fields, Union types, and complex nested structures
+    Configuration:
+        The class uses a pre-configured Pydantic ConfigDict with the following settings:
 
-    Basic Usage Examples:
+        - `extra="forbid"`: Prevents extra fields not defined in the model
+        - `frozen=True`: Makes instances immutable after creation
+        - `validate_default=True`: Validates default values during model creation
+        - `arbitrary_types_allowed=True`: Allows custom types that don't have Pydantic validators
+
+    Basic Usage:
         ```python
-        from morphic import Typed, AutoEnum, alias
-        from typing import List, Dict, Optional, Union
+        from morphic.typed import Typed
+        from typing import Optional, List
 
-        # Simple dataclass with automatic validation
         class User(Typed):
             name: str
             age: int
-            active: bool = True
+            email: Optional[str] = None
+            tags: List[str] = []
 
-            def validate(self):
-                if self.age < 0:
-                    raise ValueError("Age must be non-negative")
+        # Create and validate instances
+        user = User(name="John", age=30, email="john@example.com")
+        print(user.name)  # "John"
 
-        # Validation happens automatically during creation
-        user = User(name="John", age=30)
-        print(user.name, user.age, user.active)  # John 30 True
+        # Automatic type conversion
+        user2 = User(name="Jane", age="25")  # age converted from string to int
+        print(user2.age)  # 25 (int)
 
-        # Type validation catches mismatches immediately
+        # Validation errors with detailed messages
         try:
-            User(name=123, age=30)  # Raises TypeError - name must be str
-        except TypeError as e:
-            print(f"Type error: {e}")
-
-        # from_dict with automatic type conversion
-        user = User.from_dict({"name": "John", "age": "30"})  # "30" -> int(30)
-        assert user.age == 30 and isinstance(user.age, int)
-
-        # Custom validation runs after type validation
-        try:
-            User(name="John", age=-5)  # Raises ValueError from validate()
+            invalid_user = User(name="Bob", age="invalid")
         except ValueError as e:
-            print(f"Validation error: {e}")
+            print(e)  # Detailed error with field location and input
         ```
 
-    Advanced Examples:
+    Advanced Usage:
         ```python
-        # Nested Typed objects with automatic conversion
-        class Address(Typed):
-            street: str
-            city: str
-            zip_code: str = "00000"
+        from pydantic import Field, field_validator
+        from morphic.typed import Typed
 
-        class Company(Typed):
-            name: str
-            address: Address
-            employees: List[str] = []
+        class Product(Typed):
+            name: str = Field(..., description="Product name")
+            price: float = Field(..., gt=0, description="Price must be positive")
+            category: str = Field(default="general", description="Product category")
 
-        # Dict automatically converted to Address object
-        company = Company(
-            name="Tech Corp",
-            address={"street": "123 Main St", "city": "NYC", "zip_code": "10001"}
-        )
-        assert isinstance(company.address, Address)
-        assert company.address.street == "123 Main St"
+            @field_validator('name')
+            @classmethod
+            def validate_name(cls, v):
+                if not v.strip():
+                    raise ValueError("Name cannot be empty")
+                return v.title()
 
-        # Works with from_dict too
-        company_data = {
-            "name": "Tech Corp",
-            "address": {"street": "456 Oak Ave", "city": "SF"},
-            "employees": ["Alice", "Bob", "Charlie"]
-        }
-        company2 = Company.from_dict(company_data)
-        assert company2.address.zip_code == "00000"  # Default value
+        # Factory method
+        product = Product.of(name="laptop", price=999.99, category="electronics")
 
-        # Complex nested structures
-        class Project(Typed):
-            name: str
-            team_lead: User
-            members: List[User]
-            settings: Dict[str, Union[str, int]]
+        # Serialization
+        data = product.model_dump()  # Convert to dict
+        json_str = product.model_dump_json()  # Convert to JSON string
 
-        project = Project.from_dict({
-            "name": "Alpha Project",
-            "team_lead": {"name": "Alice", "age": 30},
-            "members": [
-                {"name": "Bob", "age": 25},
-                {"name": "Charlie", "age": 28}
-            ],
-            "settings": {"priority": "high", "budget": 50000}
-        })
-
-        assert isinstance(project.team_lead, User)
-        assert all(isinstance(member, User) for member in project.members)
-        assert project.settings["budget"] == 50000
+        # Schema generation
+        schema = Product.model_json_schema()
         ```
 
-    Default Value Validation Examples:
+    Integration with AutoEnum:
         ```python
-        # Basic default value conversion
-        class Config(Typed):
-            port: int = "8080"        # String automatically converted to int
-            debug: bool = "true"      # String automatically converted to bool
-            timeout: float = "30.5"   # String automatically converted to float
+        from morphic.autoenum import AutoEnum, auto
+        from morphic.typed import Typed
 
-        config = Config()
-        assert config.port == 8080    # Converted to int
-        assert isinstance(config.port, int)
+        class Status(AutoEnum):
+            ACTIVE = auto()
+            INACTIVE = auto()
+            PENDING = auto()
 
-        # Invalid defaults caught at class definition time
-        try:
-            class BadConfig(Typed):
-                count: int = "not_a_number"  # Raises TypeError immediately
-        except TypeError as e:
-            print(f"Invalid default caught: {e}")
+        class Task(Typed):
+            title: str
+            status: Status = Status.PENDING
 
-        # Hierarchical default conversion
-        class Contact(Typed):
-            name: str
-            email: str
-
-        class ContactList(Typed):
-            # Dict converted to Contact object automatically
-            primary: Contact = {"name": "Admin", "email": "admin@example.com"}
-
-            # List of dicts converted to list of Contact objects
-            contacts: List[Contact] = [
-                {"name": "John", "email": "john@example.com"},
-                {"name": "Jane", "email": "jane@example.com"}
-            ]
-
-            # Dict of dicts converted to dict of Contact objects
-            by_role: Dict[str, Contact] = {
-                "admin": {"name": "Administrator", "email": "admin@company.com"},
-                "user": {"name": "Regular User", "email": "user@company.com"}
-            }
-
-        # All defaults are properly converted and validated
-        contacts = ContactList()
-        assert isinstance(contacts.primary, Contact)
-        assert isinstance(contacts.contacts[0], Contact)
-        assert isinstance(contacts.by_role["admin"], Contact)
-
-        # Each instance gets its own copy of mutable defaults
-        contacts2 = ContactList()
-        contacts.contacts.append(Contact(name="New", email="new@example.com"))
-        assert len(contacts.contacts) == 3   # Modified
-        assert len(contacts2.contacts) == 2  # Unchanged
-
-        # Optional fields with proper None handling
-        class OptionalConfig(Typed):
-            name: str
-            description: Optional[str] = None  # None is valid for Optional types
-            settings: Optional[Dict[str, str]] = None
-
-        config = OptionalConfig(name="test")
-        assert config.description is None
-        assert config.settings is None
+        # AutoEnum fields work seamlessly
+        task = Task(title="Review PR", status="ACTIVE")  # String converted to enum
+        assert task.status == Status.ACTIVE
         ```
 
-    Error Handling:
-        Default value validation provides clear error messages that include:
-        - The class name where the error occurred
-        - The specific field name with the invalid default
-        - The expected type and actual type/value received
-        - Whether the error occurred during conversion or validation
-
-        ```python
-        # Example error message:
-        # TypeError: Invalid default value for field 'port' in class 'Config':
-        # Default value for field 'port' in class 'Config' expected type <class 'int'>,
-        # got str with value 'invalid_port_number'
-        ```
-
-    Performance and Best Practices:
-        - Default value validation occurs only once at class definition time
-        - Converted default values are cached and reused for all instances
-        - Mutable defaults are automatically handled to prevent shared state issues
-        - Use Optional[T] for fields that can legitimately be None
-        - Large or complex default structures are efficiently handled via default_factory
-        - Type conversion follows the same rules as from_dict() for consistency
-
-    Advanced Features:
-        - Supports Union types: Union[int, str] defaults try conversion in declaration order
-        - Handles deeply nested structures: Dict[str, List[Typed]] with full conversion
-        - Integrates with custom validation: default values must pass validate() method
-        - Compatible with dataclass field() for advanced default_factory scenarios
-        - Works seamlessly with AutoEnum string conversion and aliases
+    See Also:
+        - `morphic.registry.Registry`: For factory pattern and class registration
+        - `morphic.autoenum.AutoEnum`: For fuzzy-matching enumerations
+        - `pydantic.BaseModel`: The underlying Pydantic base class
     """
 
-    # Class-level cache for field information
-    _field_cache: ClassVar[Dict[Type, Dict[str, Field]]] = {}
+    ## Registry integration support
+    aliases: ClassVar[Tuple[str, ...]] = tuple()
 
-    def __init_subclass__(cls, **kwargs):
-        """Automatically cache field information for subclasses and apply dataclass transformation."""
-        super().__init_subclass__(**kwargs)
+    ## Pydantic V2 config schema:
+    ## https://docs.pydantic.dev/2.1/blog/pydantic-v2-alpha/#changes-to-config
+    model_config = ConfigDict(
+        ## Only string literal is needed for extra parameter
+        ## https://docs.pydantic.dev/latest/api/config/#pydantic.config.ConfigDict.extra
+        extra="forbid",
+        ## https://docs.pydantic.dev/latest/api/config/#pydantic.config.ConfigDict.frozen
+        frozen=True,
+        ## https://docs.pydantic.dev/latest/api/config/#pydantic.config.ConfigDict.validate_default
+        validate_default=True,
+        ## https://docs.pydantic.dev/latest/api/config/#pydantic.config.ConfigDict.arbitrary_types_allowed
+        arbitrary_types_allowed=True,
+    )
 
-        # Validate and convert default values BEFORE applying dataclass transformation
-        # This ensures dataclass uses the converted values
-        cls._validate_and_convert_class_defaults()
+    def __init__(self, /, **data: Dict[str, Any]):
+        """
+        Initialize a new Typed instance with validation and enhanced error handling.
 
-        # Automatically apply dataclass transformation if not already applied
-        if not hasattr(cls, "__dataclass_fields__"):
-            # Import dataclass here to avoid circular imports
-            from dataclasses import dataclass
-
-            # Apply dataclass transformation
-            dataclass_cls = dataclass(cls)
-
-            # Copy dataclass attributes back to the original class
-            # This is necessary because dataclass() returns a new class
-            cls.__dataclass_fields__ = dataclass_cls.__dataclass_fields__
-            cls.__init__ = dataclass_cls.__init__
-            cls.__repr__ = dataclass_cls.__repr__
-            cls.__eq__ = dataclass_cls.__eq__
-
-            # Copy any other dataclass-specific attributes that might exist
-            for attr_name in dir(dataclass_cls):
-                if attr_name.startswith("__dataclass") and not hasattr(cls, attr_name):
-                    setattr(cls, attr_name, getattr(dataclass_cls, attr_name))
-
-        # Cache field information and validate default_factory after dataclass transformation
-        if hasattr(cls, "__dataclass_fields__"):
-            cls._field_cache[cls] = cls.__dataclass_fields__
-            cls._validate_default_factories()
-
-    def __post_init__(self) -> None:
-        """Automatically called after dataclass initialization to run validation."""
-        self._convert_field_values()
-        self._validate_types()
-        self.validate()
-
-    @classmethod
-    def from_dict(cls: Type[T], data: Dict[str, Any], *, strict: bool = False) -> T:
-        """Create config instance from dictionary with automatic type conversion.
+        This constructor extends Pydantic's BaseModel initialization with improved error
+        messages and detailed validation feedback. It automatically validates all fields
+        according to their type annotations and any custom validators defined in the model.
 
         Args:
-            data: Dictionary to convert
-            strict: If True, raise error on unknown fields
-
-        Returns:
-            Instance of the config class
+            **data (Dict): Keyword arguments representing the field values for the model.
+                Each key should correspond to a field name defined in the model, and the
+                value will be validated and potentially converted to the correct type.
 
         Raises:
-            TypeError: If data is not a dictionary
-            ValueError: If strict=True and unknown fields are present
-        """
-        if not isinstance(data, dict):
-            raise TypeError(f"Expected dict, got {type(data)}")
-
-        # Get cached field information
-        field_info = cls._get_field_info()
-        constructor_inputs = {}
-
-        for field_name, value in data.items():
-            if field_name not in field_info:
-                if strict:
-                    raise ValueError(f"Unknown field '{field_name}' for {cls.__name__}")
-                continue
-
-            field = field_info[field_name]
-            constructor_inputs[field_name] = cls._convert_value(field, value)
-
-        return cls(**constructor_inputs)
-
-    @classmethod
-    def _get_field_info(cls) -> Dict[str, Field]:
-        """Get field information, using cache when available."""
-        if cls not in cls._field_cache:
-            cls._field_cache[cls] = {field.name: field for field in fields(cls)}
-        return cls._field_cache[cls]
-
-    @classmethod
-    def _convert_value(cls, field: Field, value: Any) -> Any:
-        """Convert a value to the appropriate type for a field."""
-        if value is None:
-            return None
-
-        field_type = field.type
-
-        # Handle Union types (e.g., Optional[int] = Union[int, None])
-        if get_origin(field_type) is Union:
-            union_args = get_args(field_type)
-            # Try each type in the union
-            for arg_type in union_args:
-                if arg_type is type(None):
-                    continue
-                try:
-                    return cls._convert_single_type(arg_type, value)
-                except (ValueError, TypeError):
-                    continue
-            # If no conversion worked, return as-is
-            return value
-
-        return cls._convert_single_type(field_type, value)
-
-    @classmethod
-    def _convert_single_type(cls, target_type: Type, value: Any) -> Any:
-        """Convert value to a single target type."""
-        # Handle generic types first before isinstance check
-        origin_type = get_origin(target_type)
-        if origin_type is not None:
-            # Handle List[Typed] or similar list structures
-            if origin_type is list:
-                type_args = get_args(target_type)
-                if type_args and isinstance(value, (list, tuple)):
-                    element_type = type_args[0]
-                    # Convert each element if it's a Typed type
-                    if cls._is_Typed_type(element_type):
-                        return [cls._convert_single_type(element_type, item) for item in value]
-                    # For non-Typed types, try basic conversion
-                    else:
-                        return [cls._convert_single_type(element_type, item) for item in value]
-                return value
-
-            # Handle Dict[str, Typed] or similar dict structures
-            elif origin_type is dict:
-                type_args = get_args(target_type)
-                if len(type_args) >= 2 and isinstance(value, dict):
-                    key_type, value_type = type_args[0], type_args[1]
-                    # Convert dict values
-                    converted_dict = {}
-                    for k, v in value.items():
-                        converted_key = cls._convert_single_type(key_type, k)
-                        converted_value = cls._convert_single_type(value_type, v)
-                        converted_dict[converted_key] = converted_value
-                    return converted_dict
-                return value
-
-            # For other generic types, return as-is
-            return value
-
-        # If already the right type, return as-is (only for non-generic types)
-        try:
-            if isinstance(value, target_type):
-                return value
-        except TypeError:
-            # Some types (like subscripted generics) can't be used with isinstance
-            pass
-
-        # Handle AutoEnum conversion (if available in morphic)
-        if hasattr(target_type, "__bases__"):
-            try:
-                # Try to import from morphic package
-                from .autoenum import AutoEnum
-
-                if any(
-                    issubclass(base, AutoEnum) for base in target_type.__bases__ if isinstance(base, type)
-                ):
-                    if isinstance(value, str):
-                        # Use from_str method for better conversion with fuzzy matching
-                        return target_type.from_str(value)
-                    return value
-            except ImportError:
-                pass
-
-            # Handle standard Python enum types
-            try:
-                import enum
-
-                if issubclass(target_type, enum.Enum):
-                    if isinstance(value, str):
-                        return target_type(value)
-                    return value
-            except (TypeError, ImportError):
-                # Not an enum or enum not available, continue with other checks
-                pass
-
-            # Handle other enum types by looking for common enum characteristics
-            if (
-                hasattr(target_type, "_value_")
-                or hasattr(target_type, "value")
-                or any(hasattr(base, "_value_") for base in target_type.__bases__ if isinstance(base, type))
-            ):
-                if isinstance(value, str):
-                    return target_type(value)
-                return value
-
-        # Handle nested Typed objects
-        if hasattr(target_type, "__bases__") and any(
-            issubclass(base, Typed) for base in target_type.__bases__ if isinstance(base, type)
-        ):
-            if isinstance(value, dict):
-                return target_type.from_dict(value)
-            return value
-
-        # Handle basic type conversions
-        if target_type in (int, float, str, bool):
-            try:
-                return target_type(value)
-            except (ValueError, TypeError):
-                # If conversion fails, return as-is and let dataclass validation handle it
-                pass
-
-        # For complex types, return as-is and let dataclass handle it
-        return value
-
-    def to_dict(self, *, exclude_none: bool = False, exclude_defaults: bool = False) -> Dict[str, Any]:
-        """Convert instance to dictionary.
-
-        Args:
-            exclude_none: If True, exclude fields with None values
-            exclude_defaults: If True, exclude fields with default values
-
-        Returns:
-            Dictionary representation of the instance
-        """
-        result = {}
-        field_info = self._get_field_info()
-
-        for field_name, field in field_info.items():
-            value = getattr(self, field_name)
-
-            if exclude_none and value is None:
-                continue
-
-            if exclude_defaults and self._is_default_value(field, value):
-                continue
-
-            # Convert nested Typed objects
-            if hasattr(value, "to_dict"):
-                result[field_name] = value.to_dict(
-                    exclude_none=exclude_none, exclude_defaults=exclude_defaults
-                )
-            # Handle lists that might contain Typed objects
-            elif isinstance(value, list):
-                converted_list = []
-                for item in value:
-                    if hasattr(item, "to_dict"):
-                        converted_list.append(
-                            item.to_dict(exclude_none=exclude_none, exclude_defaults=exclude_defaults)
-                        )
-                    elif hasattr(item, "value"):
-                        # Handle enums in lists
-                        try:
-                            from .autoenum import AutoEnum
-
-                            if isinstance(item, AutoEnum):
-                                converted_list.append(str(item))
-                            else:
-                                converted_list.append(item.value)
-                        except ImportError:
-                            converted_list.append(item.value if hasattr(item, "value") else str(item))
-                    else:
-                        converted_list.append(item)
-                result[field_name] = converted_list
-            # Handle dictionaries that might contain Typed objects
-            elif isinstance(value, dict):
-                converted_dict = {}
-                for k, v in value.items():
-                    if hasattr(v, "to_dict"):
-                        converted_dict[k] = v.to_dict(
-                            exclude_none=exclude_none, exclude_defaults=exclude_defaults
-                        )
-                    elif hasattr(v, "value"):
-                        # Handle enums in dict values
-                        try:
-                            from .autoenum import AutoEnum
-
-                            if isinstance(v, AutoEnum):
-                                converted_dict[k] = str(v)
-                            else:
-                                converted_dict[k] = v.value
-                        except ImportError:
-                            converted_dict[k] = v.value if hasattr(v, "value") else str(v)
-                    else:
-                        converted_dict[k] = v
-                result[field_name] = converted_dict
-            # Convert enums to their value (AutoEnum and other enums)
-            elif hasattr(value, "value"):
-                try:
-                    # Try to import from morphic package
-                    from .autoenum import AutoEnum
-
-                    if isinstance(value, AutoEnum):
-                        # AutoEnum stores the name as the value, just use str() representation
-                        result[field_name] = str(value)
-                    else:
-                        result[field_name] = value.value
-                except ImportError:
-                    result[field_name] = value.value if hasattr(value, "value") else str(value)
-            else:
-                result[field_name] = value
-
-        return result
-
-    def _is_default_value(self, field: Field, value: Any) -> bool:
-        """Check if a value is the default value for a field."""
-        if field.default is not MISSING:
-            return value == field.default
-        elif field.default_factory is not MISSING:
-            return value == field.default_factory()
-
-        return False
-
-    def copy(self: T, **changes) -> T:
-        """Create a copy of this instance with optional field changes.
-
-        Args:
-            **changes: Field changes to apply to the copy
-
-        Returns:
-            New instance with changes applied
-        """
-        current_dict = self.to_dict()
-        current_dict.update(changes)
-        return self.__class__.from_dict(current_dict)
-
-    def validate(self) -> None:
-        """Override in subclasses to add custom validation logic.
-
-        This method is called automatically after instance creation.
-        """
-        pass
-
-    def _convert_field_values(self) -> None:
-        """Convert field values to appropriate types before validation.
-
-        This enables automatic conversion of dictionaries to nested Typed objects
-        and basic type conversion (like string to int) in the regular constructor.
-        This makes the constructor behavior consistent with from_dict().
-        """
-        field_info = self._get_field_info()
-
-        for field_name, field in field_info.items():
-            current_value = getattr(self, field_name)
-
-            # Use full conversion logic (same as from_dict)
-            converted_value = self._convert_value(field, current_value)
-
-            # Update the field value if it was converted
-            if converted_value is not current_value:
-                setattr(self, field_name, converted_value)
-
-    @classmethod
-    def _convert_value_strict(cls, field: Field, value: Any) -> Any:
-        """Convert a value with strict rules (only nested Typeds and enums).
-
-        This is used in the constructor to maintain strict type validation while
-        still allowing dict-to-Typed conversion for nested objects.
-        """
-        if value is None:
-            return None
-
-        field_type = field.type
-
-        # Handle Union types (e.g., Optional[Typed])
-        if get_origin(field_type) is Union:
-            union_args = get_args(field_type)
-            # Try each type in the union
-            for arg_type in union_args:
-                if arg_type is type(None):
-                    continue
-                try:
-                    return cls._convert_single_type_strict(arg_type, value)
-                except (ValueError, TypeError):
-                    continue
-            # If no conversion worked, return as-is
-            return value
-
-        return cls._convert_single_type_strict(field_type, value)
-
-    @classmethod
-    def _convert_single_type_strict(cls, target_type: Type, value: Any) -> Any:
-        """Convert value to a single target type with strict rules.
-
-        Only converts nested Typed objects and enums, not basic types.
-        Also handles hierarchical structures like List[Typed] and Dict[str, Typed].
-        """
-        # Handle generic types (e.g., List[Typed], Dict[str, Typed])
-        origin_type = get_origin(target_type)
-        if origin_type is not None:
-            # Handle List[Typed] or similar list structures
-            if origin_type is list:
-                type_args = get_args(target_type)
-                if type_args and isinstance(value, list):
-                    element_type = type_args[0]
-                    # Convert each element if it's a Typed type
-                    if cls._is_Typed_type(element_type) and all(isinstance(item, dict) for item in value):
-                        return [element_type(**item) for item in value]
-                    # Also handle nested conversions for existing Typed instances
-                    elif cls._is_Typed_type(element_type):
-                        converted_items = []
-                        for item in value:
-                            if isinstance(item, dict):
-                                converted_items.append(element_type(**item))
-                            else:
-                                converted_items.append(item)
-                        return converted_items
-                return value
-
-            # Handle Dict[str, Typed] or similar dict structures
-            elif origin_type is dict:
-                type_args = get_args(target_type)
-                if len(type_args) >= 2 and isinstance(value, dict):
-                    value_type = type_args[1]  # Second type arg is the value type
-                    # Convert dict values if they're Typed types
-                    if cls._is_Typed_type(value_type):
-                        converted_dict = {}
-                        for k, v in value.items():
-                            if isinstance(v, dict):
-                                converted_dict[k] = value_type(**v)
-                            else:
-                                converted_dict[k] = v
-                        return converted_dict
-                return value
-
-            # For other generic types, don't try to convert - return as-is
-            # Validation will handle checking the container type
-            return value
-
-        # Handle direct type match
-        try:
-            if isinstance(value, target_type):
-                return value
-        except TypeError:
-            # Some types (like complex generics) can't be used with isinstance
-            # Return as-is and let validation handle it
-            return value
-
-        # Handle AutoEnum conversion (if available in morphic)
-        if hasattr(target_type, "__bases__"):
-            try:
-                # Try to import from morphic package
-                from .autoenum import AutoEnum
-
-                if any(
-                    issubclass(base, AutoEnum) for base in target_type.__bases__ if isinstance(base, type)
-                ):
-                    if isinstance(value, str):
-                        # Try conversion, but don't raise errors - let validation handle it
-                        try:
-                            return target_type.from_str(value)
-                        except ValueError:
-                            # Invalid enum value - return as-is for validation to catch
-                            return value
-                    return value
-            except ImportError:
-                pass
-
-            # Handle other enum types by looking for common enum characteristics
-            if (
-                hasattr(target_type, "_value_")
-                or hasattr(target_type, "value")
-                or any(hasattr(base, "_value_") for base in target_type.__bases__ if isinstance(base, type))
-            ):
-                if isinstance(value, str):
-                    try:
-                        return target_type(value)
-                    except ValueError:
-                        # Invalid enum value - return as-is for validation to catch
-                        return value
-                return value
-
-        # Handle nested Typed objects
-        if hasattr(target_type, "__bases__") and any(
-            issubclass(base, Typed) for base in target_type.__bases__ if isinstance(base, type)
-        ):
-            if isinstance(value, dict):
-                # Create nested object directly to maintain strict validation
-                # The nested object's own validation will catch type errors
-                return target_type(**value)
-            return value
-
-        # Do NOT convert basic types (int, float, str, bool) - maintain strict validation
-        # Return value as-is and let validation catch type mismatches
-        return value
-
-    @classmethod
-    def _is_Typed_type(cls, target_type: Type) -> bool:
-        """Check if a type is a Typed subclass.
-
-        Args:
-            target_type: The type to check
-
-        Returns:
-            True if target_type is a subclass of Typed, False otherwise
-
-        Note:
-            This method safely handles types that may not be classes or may
-            not support isinstance/issubclass operations.
-        """
-        if not hasattr(target_type, "__bases__"):
-            return False
-        try:
-            return any(issubclass(base, Typed) for base in target_type.__bases__ if isinstance(base, type))
-        except TypeError:
-            return False
-
-    @classmethod
-    def _validate_and_convert_class_defaults(cls) -> None:
-        """Validate and convert default values at class definition time.
-
-        This method is called during class creation (in __init_subclass__) to:
-        1. Convert default values to appropriate types (e.g., "25" -> 25 for int fields)
-        2. Handle hierarchical defaults (convert dicts to Typed objects)
-        3. Convert mutable defaults to default_factory to prevent shared mutable state
-        4. Validate that converted defaults comply with their type annotations
-        5. Provide clear error messages for invalid defaults
-
-        The validation happens before dataclass transformation to ensure that
-        dataclass receives properly typed default values.
-
-        Raises:
-            TypeError: If a default value cannot be converted or is invalid for its type
+            ValueError: If validation fails for any field. The error message includes:
+                - Detailed breakdown of each validation error
+                - Field locations where errors occurred
+                - Input values that caused the errors
+                - Pretty-formatted representation of all provided data
+
+                This wraps Pydantic's ValidationError to provide more context.
 
         Examples:
             ```python
-            class Config(Typed):
-                port: int = "8080"  # Converted to int(8080)
-                users: List[User] = [{"name": "admin"}]  # Converted to default_factory
+            class User(Typed):
+                name: str
+                age: int
+                active: bool = True
 
-            # Raises TypeError at class definition:
-            class BadConfig(Typed):
-                count: int = "invalid"  # Cannot convert to int
+            # Valid initialization
+            user = User(name="John", age=30)
+            print(user.name)  # "John"
+
+            # Type conversion
+            user2 = User(name="Jane", age="25", active="false")
+            print(user2.age)    # 25 (converted from string)
+            print(user2.active) # False (converted from string)
+
+            # Validation error with detailed message
+            try:
+                User(name="Bob", age="invalid_age")
+            except ValueError as e:
+                print(e)
+                # Output includes:
+                # - Error location: ('age',)
+                # - Error message: Input should be a valid integer
+                # - Input value: 'invalid_age'
+                # - All provided data: {'name': 'Bob', 'age': 'invalid_age'}
             ```
-        """
-        # Get type hints directly from the class
-        if not hasattr(cls, "__annotations__"):
-            return
 
-        annotations = cls.__annotations__
-        for field_name, field_type in annotations.items():
-            # Check if there's a class attribute with a default value
-            if hasattr(cls, field_name):
-                default_value = getattr(cls, field_name)
+        Field Validation:
+            The constructor performs validation in the following order:
 
-                # Skip if this looks like a Field object or method
-                if hasattr(default_value, "__call__") or str(type(default_value)).startswith(
-                    "<class 'dataclasses."
-                ):
-                    continue
+            1. **Type Validation**: Each field is validated against its type annotation
+            2. **Field Validators**: Custom validators decorated with `@field_validator`
+            3. **Model Validators**: Model-level validators decorated with `@model_validator`
+            4. **Constraint Validation**: Pydantic Field constraints (min, max, regex, etc.)
 
-                try:
-                    # Create a mock field object for conversion
-                    mock_field = type("MockField", (), {"type": field_type})()
+        Type Conversion:
+            Common type conversions that happen automatically:
 
-                    # Try to convert the default value
-                    converted_default = cls._convert_value(mock_field, default_value)
-
-                    # Handle mutable defaults - convert to default_factory
-                    # Include Typed objects as they are also mutable
-                    is_mutable = isinstance(converted_default, (list, dict, set)) or (
-                        hasattr(converted_default, "__dict__")
-                        and hasattr(converted_default.__class__, "__bases__")
-                        and any(
-                            issubclass(base, Typed)
-                            for base in converted_default.__class__.__bases__
-                            if isinstance(base, type)
-                        )
-                    )
-
-                    if is_mutable:
-                        # Import field here to avoid circular imports
-                        from dataclasses import field
-
-                        # Create a factory function that returns a copy of the converted default
-                        def make_factory(value):
-                            def factory():
-                                if isinstance(value, list):
-                                    return value.copy()
-                                elif isinstance(value, dict):
-                                    return value.copy()
-                                elif isinstance(value, set):
-                                    return value.copy()
-                                elif hasattr(value, "copy"):
-                                    # For Typed objects that might have a copy method
-                                    try:
-                                        return value.copy()
-                                    except (AttributeError, TypeError):
-                                        # If copy fails, create a new instance from dict
-                                        return value.__class__.from_dict(value.to_dict())
-                                else:
-                                    # For other Typed objects, create new instance
-                                    if hasattr(value, "to_dict") and hasattr(value.__class__, "from_dict"):
-                                        return value.__class__.from_dict(value.to_dict())
-                                    return value
-
-                            return factory
-
-                        # Replace the class attribute with a field() using default_factory
-                        setattr(cls, field_name, field(default_factory=make_factory(converted_default)))
-                    else:
-                        # Update the class attribute with the converted value for immutable types
-                        if converted_default is not default_value:
-                            setattr(cls, field_name, converted_default)
-
-                    # Basic type validation - create temp instance for validation methods
-                    temp_instance = object.__new__(cls)
-                    temp_instance._Typed__dict = {}  # Initialize to avoid AttributeError
-
-                    # Special handling for None values with Optional types
-                    if converted_default is None and temp_instance._type_allows_none(field_type):
-                        # None is valid for Optional types, skip validation
-                        pass
-                    elif not temp_instance._is_value_valid_for_type(converted_default, field_type):
-                        raise TypeError(
-                            f"Default value for field '{field_name}' in class '{cls.__name__}' "
-                            f"expected type {field_type}, got {type(converted_default).__name__} "
-                            f"with value {converted_default!r}"
-                        )
-                except Exception as e:
-                    # Re-raise with more context
-                    raise TypeError(
-                        f"Invalid default value for field '{field_name}' in class '{cls.__name__}': {e}"
-                    ) from e
-
-    @classmethod
-    def _validate_default_factories(cls) -> None:
-        """Validate default_factory callables after dataclass transformation.
-
-        This method ensures that all default_factory values are callable.
-        It's called after dataclass transformation because some default_factory
-        values may be created automatically during mutable default conversion.
-
-        Raises:
-            TypeError: If a default_factory is not callable
+            - `str` to `int`, `float`, `bool` when the string represents a valid value
+            - `int` to `float` when a float field receives an integer
+            - `str` to `AutoEnum` when using morphic AutoEnum fields
+            - `dict` to nested `Typed` models when properly annotated
+            - `list` elements converted according to `List[Type]` annotations
 
         Note:
-            This validation cannot check the return type of default_factory
-            functions since they are called at instance creation time, not
-            class definition time.
+            This method wraps Pydantic's native ValidationError in a ValueError with
+            enhanced formatting. The original Pydantic behavior is preserved while
+            providing more user-friendly error messages.
         """
-        if cls not in cls._field_cache:
-            return
-
-        field_info = cls._field_cache[cls]
-        for field_name, field in field_info.items():
-            # Check default_factory values
-            if field.default_factory is not MISSING:
-                if not callable(field.default_factory):
-                    raise TypeError(
-                        f"default_factory for field '{field_name}' in class '{cls.__name__}' "
-                        f"must be callable, got {type(field.default_factory).__name__}"
+        try:
+            super().__init__(**data)
+        except ValidationError as e:
+            errors_str = ""
+            for error_i, error in enumerate(e.errors()):
+                assert isinstance(error, dict)
+                error_msg: str = textwrap.indent(error.get("msg", ""), "    ").strip()
+                errors_str += f"\n[Error#{error_i + 1}] ValidationError in {error['loc']}: {error_msg}"
+                if isinstance(error["input"], dict):
+                    errors_str += (
+                        f"\n[Error#{error_i + 1}] Input keys: {_Typed_pformat(error['input'].keys())}"
                     )
-
-    def _validate_types(self) -> None:
-        """Validate that all field values match their type annotations."""
-        field_info = self._get_field_info()
-
-        for field_name, field in field_info.items():
-            value = getattr(self, field_name)
-            field_type = field.type
-
-            # Skip validation for None values if the field type allows None
-            if value is None:
-                if self._type_allows_none(field_type):
-                    continue
+                    errors_str += f"\n[Error#{error_i + 1}] Input values: {_Typed_pformat(error['input'])}"
                 else:
-                    raise TypeError(f"Field '{field_name}' cannot be None, expected {field_type}")
+                    errors_str += f"\n[Error#{error_i + 1}] Input: {_Typed_pformat(error['input'])}"
+            raise ValueError(
+                f"Cannot create Pydantic instance of type '{self.class_name}' {self.__class__}, "
+                f"encountered following validation errors: {errors_str}"
+                f"\nInputs to '{self.class_name}' constructor are {tuple(data.keys())}:"
+                f"\n{_Typed_pformat(data)}"
+            )
 
-            # Validate the value against the field type
-            if not self._is_value_valid_for_type(value, field_type):
-                raise TypeError(
-                    f"Field '{field_name}' expected type {field_type}, got {type(value).__name__} with value {value!r}"
-                )
+        except Exception as e:
+            error_msg: str = textwrap.indent(format_exception_msg(e), "    ")
+            raise ValueError(
+                f"Cannot create Pydantic instance of type '{self.class_name}' {self.__class__}, "
+                f"encountered Exception:\n{error_msg}"
+                f"\nInputs to '{self.class_name}' constructor are {tuple(data.keys())}:"
+                f"\n{_Typed_pformat(data)}"
+            )
 
-    def _type_allows_none(self, field_type: Type) -> bool:
-        """Check if a type annotation allows None values."""
-        # Handle Union types (e.g., Optional[int] = Union[int, None])
-        if get_origin(field_type) is Union:
-            union_args = get_args(field_type)
-            return type(None) in union_args
+    @classmethod
+    def of(cls, /, **data: Dict[str, Any]) -> T:
+        """
+        Factory method for creating instances with keyword arguments.
 
-        return False
+        This is a convenience factory method that provides an alternative way to create
+        instances of Typed models. It's functionally equivalent to calling the constructor
+        directly but offers a more fluent interface that can be useful in factory patterns
+        and method chaining scenarios.
 
-    def _is_value_valid_for_type(self, value: Any, field_type: Type) -> bool:
-        """Check if a value is valid for the given type annotation."""
-        # Handle Union types (e.g., Optional[int] = Union[int, None])
-        if get_origin(field_type) is Union:
-            union_args = get_args(field_type)
-            # Value is valid if it matches any type in the union (except None, handled separately)
-            for arg_type in union_args:
-                if arg_type is type(None):
-                    continue
-                if self._is_value_valid_for_single_type(value, arg_type):
-                    return True
-            return False
+        Args:
+            **kwargs (Any): Keyword arguments passed directly to the class constructor.
+                These are the same field values that would be passed to `__init__`.
 
-        return self._is_value_valid_for_single_type(value, field_type)
+        Returns:
+            T: A new instance of the Typed subclass with validated field values.
 
-    def _is_value_valid_for_single_type(self, value: Any, target_type: Type) -> bool:
-        """Check if a value is valid for a single target type."""
-        # Handle generic types (e.g., List[str], Dict[str, int])
-        origin_type = get_origin(target_type)
-        if origin_type is not None:
-            # For generic types, check if value is instance of the origin type
-            # We don't check the type parameters for simplicity - just the container type
-            try:
-                return isinstance(value, origin_type)
-            except TypeError:
-                # Some types might not work with isinstance, fallback to basic checks
-                return False
+        Raises:
+            ValueError: If validation fails, same as the constructor. See `__init__`
+                documentation for details on validation behavior and error messages.
 
-        # Handle direct type match
-        try:
-            if isinstance(value, target_type):
-                return True
-        except TypeError:
-            # Some types (like complex generics) can't be used with isinstance
-            # In this case, we'll be permissive and allow the value
-            return True
+        Examples:
+            ```python
+            class User(Typed):
+                name: str
+                age: int
+                active: bool = True
 
-        # Handle AutoEnum types (if available in morphic)
-        if hasattr(target_type, "__bases__"):
-            try:
-                # Try to import from morphic package
-                from .autoenum import AutoEnum
+            # These are equivalent
+            user1 = User(name="John", age=30)
+            user2 = User.of(name="John", age=30)
 
-                if any(
-                    issubclass(base, AutoEnum) for base in target_type.__bases__ if isinstance(base, type)
-                ):
-                    return isinstance(value, target_type)
-            except ImportError:
-                pass
+            assert user1.model_dump() == user2.model_dump()
 
-            # Handle other enum types
-            if (
-                hasattr(target_type, "_value_")
-                or hasattr(target_type, "value")
-                or any(hasattr(base, "_value_") for base in target_type.__bases__ if isinstance(base, type))
-            ):
-                return isinstance(value, target_type)
+            # Useful in factory patterns
+            def create_user_from_dict(data: dict) -> User:
+                return User.of(**data)
 
-        # Handle nested Typed objects
-        if hasattr(target_type, "__bases__") and any(
-            issubclass(base, Typed) for base in target_type.__bases__ if isinstance(base, type)
-        ):
-            return isinstance(value, target_type)
+            # Method chaining style
+            users = [
+                User.of(name="Alice", age=25),
+                User.of(name="Bob", age=30),
+                User.of(name="Carol", age=35),
+            ]
+            ```
 
-        # For basic types, only allow exact type matches for strict validation
-        # This means str won't auto-convert to int, etc.
-        try:
-            return isinstance(value, target_type)
-        except TypeError:
-            # If isinstance fails, be permissive
-            return True
+        Integration with Registry:
+            When used with morphic.Registry, this method provides consistency with the
+            Registry factory pattern:
 
-    def __repr__(self) -> str:
-        """Enhanced repr that shows all fields clearly."""
-        field_info = self._get_field_info()
-        field_strs = []
+            ```python
+            from morphic.registry import Registry
+            from morphic.typed import Typed
 
-        for field_name in field_info:
-            value = getattr(self, field_name)
-            field_strs.append(f"{field_name}={value!r}")
+            class DataModel(Registry, Typed):
+                name: str
 
-        return f"{self.__class__.__name__}({', '.join(field_strs)})"
+            class UserModel(DataModel):
+                age: int
+
+            # Both work consistently
+            user1 = UserModel.of(name="John", age=30)        # Typed factory
+            user2 = DataModel.of("UserModel", name="John", age=30)  # Registry factory
+            ```
+
+        Note:
+            This method is purely a convenience wrapper around the constructor and
+            provides no additional functionality beyond improved ergonomics.
+        """
+        return cls(**data)
+
+    @classproperty
+    def class_name(cls) -> str:
+        """
+        Get the name of the class as a string.
+
+        Returns the simple class name (without module path) of the current class.
+        This is useful for error messages, logging, and debugging.
+
+        Returns:
+            str: The name of the class (e.g., "User" for a User class).
+
+        Examples:
+            ```python
+            class User(Typed):
+                name: str
+
+            print(User.class_name)  # "User"
+
+            user = User(name="John")
+            print(user.class_name)  # "User" (same for instances)
+            ```
+        """
+        return str(cls.__name__)  ## Will return the child class name.
+
+    @classproperty
+    def param_names(cls) -> Set[str]:
+        """
+        Get the names of all model fields as a set.
+
+        Extracts field names from the model's JSON schema, providing a convenient
+        way to inspect what fields are available on a model without creating an instance.
+
+        Returns:
+            Set[str]: Set containing all field names defined in the model.
+
+        Examples:
+            ```python
+            class User(Typed):
+                name: str
+                age: int
+                email: Optional[str] = None
+
+            field_names = User.param_names
+            print(field_names)  # {"name", "age", "email"}
+
+            # Check if a field exists
+            if "email" in User.param_names:
+                print("User model has email field")
+            ```
+
+        Note:
+            This property uses the model's JSON schema, so it reflects the actual
+            fields that Pydantic recognizes for validation and serialization.
+        """
+        return set(cls.model_json_schema().get("properties", {}).keys())
+
+    @classproperty
+    def param_default_values(cls) -> Dict:
+        """
+        Get default values for model fields that have defaults defined.
+
+        Extracts default values from the model's JSON schema, providing an easy way
+        to inspect which fields have defaults and what those default values are.
+
+        Returns:
+            Dict: Dictionary mapping field names to their default values. Only includes
+                fields that have explicit defaults defined.
+
+        Examples:
+            ```python
+            class User(Typed):
+                name: str                    # No default
+                age: int                     # No default
+                active: bool = True          # Has default
+                role: str = "user"          # Has default
+                email: Optional[str] = None  # Has default
+
+            defaults = User.param_default_values
+            print(defaults)  # {"active": True, "role": "user", "email": None}
+
+            # Check if a field has a default
+            if "active" in User.param_default_values:
+                print(f"Default active value: {User.param_default_values['active']}")
+            ```
+
+        Note:
+            - Only fields with explicit defaults are included
+            - Fields without defaults will not appear in the returned dictionary
+            - Values are extracted from JSON schema, so they may be serialized representations
+        """
+        properties = cls.model_json_schema().get("properties", {})
+        return {param: prop.get("default") for param, prop in properties.items() if "default" in prop}
+
+    @classproperty
+    def _constructor(cls) -> T:
+        """
+        Internal property that returns the class constructor.
+
+        This is primarily used internally for consistency with other morphic patterns
+        and framework integration. External users should generally use the class
+        directly or the `of` factory method.
+
+        Returns:
+            Type[T]: The class itself, typed as the generic type parameter.
+
+        Note:
+            This is an internal implementation detail and may change in future versions.
+            Use `cls` directly or `cls.of()` for public API usage.
+        """
+        return cls
+
+    def __str__(self) -> str:
+        """
+        Return a human-readable string representation of the model instance.
+
+        Provides a formatted string showing the class name followed by a JSON
+        representation of the model's data with proper indentation for readability.
+
+        Returns:
+            str: Formatted string containing class name and JSON representation
+                of the model data.
+
+        Examples:
+            ```python
+            class User(Typed):
+                name: str
+                age: int
+                active: bool = True
+
+            user = User(name="John", age=30, active=False)
+            print(str(user))
+            # Output:
+            # User:
+            # {
+            #     "name": "John",
+            #     "age": 30,
+            #     "active": false
+            # }
+
+            # Also works with complex nested structures
+            class Profile(Typed):
+                user: User
+                tags: List[str]
+
+            profile = Profile(
+                user={"name": "Jane", "age": 25},
+                tags=["admin", "developer"]
+            )
+            print(str(profile))  # Formatted JSON with nested User object
+            ```
+
+        Note:
+            This method uses `model_dump_json()` for Pydantic v2 compatibility
+            to generate the JSON representation with proper formatting.
+        """
+        params_str: str = self.model_dump_json(indent=4)
+        out: str = f"{self.class_name}:\n{params_str}"
+        return out
 
 
-class ValidationError(ValueError):
-    """Exception raised when function argument validation fails."""
+def validate(*args, **kwargs):
+    """
+    Function decorator for automatic parameter validation using Pydantic.
 
-    pass
+    This decorator validates function parameters against their type annotations using Pydantic's
+    validation system. It provides automatic type conversion, validation, and helpful error
+    messages for function arguments, making it easy to add runtime type checking to any function.
 
+    Features:
+        - **Automatic Type Conversion**: Converts compatible types (e.g., string to int)
+        - **Type Validation**: Validates all parameters against their type annotations
+        - **Default Value Validation**: Validates default parameter values at call time
+        - **Detailed Error Messages**: Provides clear validation error messages
+        - **Arbitrary Types**: Supports custom types and Typed models as parameters
+        - **Return Value Validation**: Optional validation of return values
 
-def validate(func: Callable = None, /, *, validate_return: bool = False) -> Callable:
-    """Decorator that validates function arguments using type annotations.
+    Configuration:
+        The decorator is pre-configured with the following Pydantic settings:
 
-    This decorator provides Pydantic-like validation for function arguments,
-    using the same type conversion and validation system as Typed.
+        - `populate_by_name=True`: Allows both original names and aliases for fields
+        - `arbitrary_types_allowed=True`: Supports custom types beyond built-in types
+        - `validate_default=True`: Validates default parameter values when used
 
-    Args:
-        func: The function to decorate (when used as @validate)
-        validate_return: Whether to validate the return value. Default: False
-
-    Returns:
-        Decorated function with argument validation
-
-    Raises:
-        ValidationError: When function arguments don't match their type annotations
-
-    Examples:
+    Basic Usage:
         ```python
-        from morphic import Typed, validate
+        from morphic.typed import validate
 
-        # Basic usage
         @validate
-        def add_numbers(a: int, b: int) -> int:
-            return a + b
+        def create_user(name: str, age: int, active: bool = True) -> str:
+            return f"User {name}, age {age}, active: {active}"
 
-        result = add_numbers("5", "10")  # Strings converted to ints: 15
+        # Automatic type conversion
+        result = create_user("John", "30", "false")
+        print(result)  # "User John, age 30, active: False"
 
-        # With return validation
-        @validate(validate_return=True)
-        def process_data(data: Any, count: int = 10) -> str:
-            return f"Processed {count} items: {data}"
+        # Validation errors for invalid types
+        try:
+            create_user("John", "invalid_age")
+        except ValidationError as e:
+            print(e)  # Clear error message about invalid integer
+        ```
 
-        # With return validation
-        @validate(validate_return=True)
-        def get_user_name(user_id: int) -> str:
-            return f"user_{user_id}"  # Return value validated as str
+    Advanced Usage:
+        ```python
+        from typing import List, Optional
+        from morphic.typed import validate, Typed
 
-        # With Typed types
         class User(Typed):
             name: str
             age: int
 
         @validate
-        def create_user(user_data: User) -> User:
-            return user_data
+        def process_users(
+            users: List[User],
+            active_only: bool = True,
+            max_age: Optional[int] = None
+        ) -> List[str]:
+            # users automatically converted from list of dicts to list of User objects
+            filtered = [u for u in users if not active_only or u.age <= (max_age or 100)]
+            return [u.name for u in filtered]
 
-        # Dict automatically converted to User object
-        user = create_user({"name": "John", "age": 30})
-        assert isinstance(user, User)
+        # Dict to Typed conversion happens automatically
+        result = process_users([
+            {"name": "Alice", "age": "25"},  # Dict converted to User
+            {"name": "Bob", "age": "30"},
+        ], max_age="35")  # String converted to int
+        print(result)  # ["Alice", "Bob"]
         ```
 
-    Configuration:
-        This decorator always uses the following configuration:
-        - arbitrary_types_allowed: True - allows any type annotations
-        - validate_default: True - validates default parameter values at decoration time
+    Return Value Validation:
+        ```python
+        @validate(validate_return=True)
+        def get_user_name(user_id: int) -> str:
+            if user_id > 0:
+                return f"user_{user_id}"
+            else:
+                return None  # This will raise ValidationError
 
-    Features:
-        - Automatic type conversion (e.g., "5" -> 5 for int parameters)
-        - Typed object creation from dictionaries
-        - AutoEnum string conversion with fuzzy matching
-        - List and dict conversion for nested structures
-        - Union type support (tries each type in order)
-        - Optional parameter validation
-        - Default value validation (if validate_default=True)
-        - Return value validation (if validate_return=True)
-        - Preserves original function signature and metadata
-        - Works with both sync and async functions
-
-    Performance Notes:
-        - Validation overhead occurs on every function call
-        - Type conversion is cached for repeated calls with same types
-        - Original function accessible via decorated_func.raw_function
-    """
-    # Fixed configuration with pydantic-compatible settings
-    config = {"arbitrary_types_allowed": True, "validate_default": True}
-
-    def decorator(f: Callable) -> Callable:
-        # Get function signature for parameter validation
-        sig = inspect.signature(f)
-
-        # Validate default values (always enabled)
-        _validate_function_defaults(f, sig)
-
-        @wraps(f)
-        def wrapper(*args, **kwargs):
-            # Bind arguments to parameters
-            try:
-                bound_args = sig.bind(*args, **kwargs)
-                bound_args.apply_defaults()
-            except TypeError as e:
-                raise ValidationError(f"Invalid function arguments: {e}") from e
-
-            # Validate and convert each argument
-            validated_args = {}
-            for param_name, value in bound_args.arguments.items():
-                param = sig.parameters[param_name]
-
-                # Skip validation for *args and **kwargs parameters
-                if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
-                    validated_args[param_name] = value
-                    continue
-
-                # Skip if no type annotation
-                if param.annotation == inspect.Parameter.empty:
-                    validated_args[param_name] = value
-                    continue
-
-                # Create a mock field for the Typed conversion system
-                mock_field = type("MockField", (), {"type": param.annotation})()
-
-                try:
-                    # Use Typed's type conversion system
-                    converted_value = Typed._convert_value(mock_field, value)
-
-                    # Validate the converted value (always using arbitrary_types_allowed=True)
-                    if not _is_value_valid_for_annotation(converted_value, param.annotation):
-                        raise ValidationError(
-                            f"Argument '{param_name}' expected type {param.annotation}, "
-                            f"got {type(converted_value).__name__} with value {converted_value!r}"
-                        )
-
-                    validated_args[param_name] = converted_value
-
-                except Exception as e:
-                    if isinstance(e, ValidationError):
-                        raise
-                    raise ValidationError(f"Failed to validate argument '{param_name}': {e}") from e
-
-            # Call the original function
-            result = f(**validated_args)
-
-            # Validate return value if requested
-            if validate_return and sig.return_annotation != inspect.Parameter.empty:
-                try:
-                    # For return validation, we're stricter - don't do automatic conversion
-                    # Just validate that the return value matches the expected type
-                    if not _is_value_valid_for_annotation(result, sig.return_annotation):
-                        raise ValidationError(
-                            f"Return value expected type {sig.return_annotation}, "
-                            f"got {type(result).__name__} with value {result!r}"
-                        )
-                except Exception as e:
-                    if isinstance(e, ValidationError):
-                        raise
-                    raise ValidationError(f"Failed to validate return value: {e}") from e
-
-            return result
-
-        # Store original function for access
-        wrapper.raw_function = f
-        wrapper.__signature__ = sig
-
-        return wrapper
-
-    # Handle both @validate and @validate(...) usage
-    if func is None:
-        return decorator
-    else:
-        return decorator(func)
-
-
-def _validate_function_defaults(func: Callable, sig: inspect.Signature) -> None:
-    """Validate default parameter values against their type annotations."""
-    for param_name, param in sig.parameters.items():
-        # Skip if no default value or no annotation
-        if param.default == inspect.Parameter.empty or param.annotation == inspect.Parameter.empty:
-            continue
-
-        # Skip *args and **kwargs
-        if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
-            continue
+        name = get_user_name(5)  # "user_5"
 
         try:
-            # Create mock field for validation
-            mock_field = type("MockField", (), {"type": param.annotation})()
+            get_user_name(-1)  # ValidationError: return value not a string
+        except ValidationError as e:
+            print(e)
+        ```
 
-            # Use stricter validation for default parameters
-            converted_default = _convert_and_validate_default(mock_field, param.default, param.annotation)
+    Type Conversion Examples:
+        The decorator handles many common type conversions automatically:
 
-            # Additional validation check
-            if not _is_value_valid_for_annotation(converted_default, param.annotation):
-                raise ValidationError(
-                    f"Default value for parameter '{param_name}' in function '{func.__name__}' "
-                    f"expected type {param.annotation}, got {type(converted_default).__name__} "
-                    f"with value {converted_default!r}"
-                )
+        ```python
+        @validate
+        def example_conversions(
+            number: int,           # "123" -> 123
+            decimal: float,        # "3.14" -> 3.14
+            flag: bool,           # "true" -> True, "false" -> False
+            items: List[int],     # ["1", "2", "3"] -> [1, 2, 3]
+            mapping: Dict[str, int],  # {"a": "1"} -> {"a": 1}
+            user: User,           # {"name": "John", "age": 30} -> User instance
+        ):
+            pass
+        ```
 
-        except Exception as e:
-            if isinstance(e, ValidationError):
-                raise
-            raise ValidationError(
-                f"Invalid default value for parameter '{param_name}' in function '{func.__name__}': {e}"
-            ) from e
+    Error Handling:
+        ```python
+        @validate
+        def divide(a: int, b: int) -> float:
+            return a / b
 
-
-def _convert_and_validate_default(mock_field: Any, value: Any, annotation: Type) -> Any:
-    """Convert and validate default parameter values with strict validation.
-
-    This function is stricter than Typed._convert_value and will raise
-    ValidationError for any conversion that fails, ensuring default values
-    are properly validated at decoration time.
-    """
-    if value is None:
-        # Handle None for Optional types
-        if get_origin(annotation) is Union:
-            union_args = get_args(annotation)
-            if type(None) in union_args:
-                return None
-            else:
-                raise ValidationError(f"None not allowed for non-Optional type {annotation}")
-        else:
-            raise ValidationError(f"None not allowed for type {annotation}")
-
-    # Handle Union types
-    if get_origin(annotation) is Union:
-        union_args = get_args(annotation)
-        last_error = None
-        # Try each type in the union
-        for arg_type in union_args:
-            if arg_type is type(None):
-                continue
-            try:
-                return _convert_and_validate_default_single_type(value, arg_type)
-            except (ValueError, TypeError, ValidationError) as e:
-                last_error = e
-                continue
-        # If no conversion worked, raise the last error
-        raise ValidationError(f"Could not convert {value!r} to any type in {annotation}") from last_error
-
-    return _convert_and_validate_default_single_type(value, annotation)
-
-
-def _convert_and_validate_default_single_type(value: Any, target_type: Type) -> Any:
-    """Convert value to a single target type with strict validation for defaults."""
-    # Handle generic types first
-    origin_type = get_origin(target_type)
-    if origin_type is not None:
-        # Handle List[Type]
-        if origin_type is list:
-            if not isinstance(value, (list, tuple)):
-                raise ValidationError(f"Expected list for {target_type}, got {type(value).__name__}")
-
-            type_args = get_args(target_type)
-            if type_args:
-                element_type = type_args[0]
-                converted_items = []
-                for i, item in enumerate(value):
-                    try:
-                        converted_item = _convert_and_validate_default_single_type(item, element_type)
-                        converted_items.append(converted_item)
-                    except Exception as e:
-                        raise ValidationError(f"Invalid list element at index {i}: {e}") from e
-                return converted_items
-            return list(value)
-
-        # Handle Dict[KeyType, ValueType]
-        elif origin_type is dict:
-            if not isinstance(value, dict):
-                raise ValidationError(f"Expected dict for {target_type}, got {type(value).__name__}")
-
-            type_args = get_args(target_type)
-            if len(type_args) >= 2:
-                key_type, value_type = type_args[0], type_args[1]
-                converted_dict = {}
-                for k, v in value.items():
-                    try:
-                        converted_key = _convert_and_validate_default_single_type(k, key_type)
-                        converted_value = _convert_and_validate_default_single_type(v, value_type)
-                        converted_dict[converted_key] = converted_value
-                    except Exception as e:
-                        raise ValidationError(f"Invalid dict entry {k!r}: {e}") from e
-                return converted_dict
-            return dict(value)
-
-        # For other generic types, return as-is
-        return value
-
-    # If already the right type, return as-is
-    try:
-        if isinstance(value, target_type):
-            return value
-    except TypeError:
-        # Some types can't be used with isinstance
-        pass
-
-    # Handle Typed types
-    if hasattr(target_type, "__bases__") and any(
-        issubclass(base, Typed) for base in target_type.__bases__ if isinstance(base, type)
-    ):
-        if isinstance(value, dict):
-            try:
-                return target_type.from_dict(value)
-            except Exception as e:
-                raise ValidationError(f"Could not create {target_type.__name__} from dict: {e}") from e
-        return value
-
-    # Handle basic type conversions with strict validation
-    if target_type in (int, float, str, bool):
         try:
-            if target_type is bool and isinstance(value, str):
-                # Handle string to bool conversion more strictly
-                lower_val = value.lower()
-                if lower_val in ("true", "1", "yes", "on"):
-                    return True
-                elif lower_val in ("false", "0", "no", "off", ""):
-                    return False
-                else:
-                    raise ValueError(f"Cannot convert '{value}' to bool")
-            else:
-                converted = target_type(value)
-                # Additional validation for string to number conversion
-                if target_type in (int, float) and isinstance(value, str):
-                    # Make sure the conversion actually makes sense
-                    if str(converted) != str(value).strip():
-                        # Allow for float precision differences
-                        if target_type is float:
-                            try:
-                                if abs(float(value) - converted) > 1e-10:
-                                    raise ValueError(f"Conversion changed value: '{value}' -> {converted}")
-                            except (ValueError, TypeError):
-                                raise ValueError(f"Cannot convert '{value}' to {target_type.__name__}")
-                return converted
-        except (ValueError, TypeError) as e:
-            raise ValidationError(f"Cannot convert {value!r} to {target_type.__name__}: {e}") from e
+            divide("10", "not_a_number")
+        except ValidationError as e:
+            print(e)
+            # Output: Detailed error showing which parameter failed validation
+            # and what the invalid input was
+        ```
 
-    # For complex types we can't handle, return as-is and let validation catch issues
-    return value
+    Integration with Typed Models:
+        ```python
+        class Config(Typed):
+            host: str = "localhost"
+            port: int = 8080
+            debug: bool = False
 
+        @validate
+        def start_server(config: Config) -> str:
+            return f"Starting server on {config.host}:{config.port}"
 
-def _is_value_valid_for_annotation(value: Any, annotation: Type) -> bool:
-    """Check if a value is valid for a type annotation (always with arbitrary_types_allowed=True)."""
-    # Handle None for Optional types
-    if value is None:
-        if get_origin(annotation) is Union:
-            union_args = get_args(annotation)
-            return type(None) in union_args
-        return False
+        # Dict automatically converted to Config instance
+        result = start_server({
+            "host": "example.com",
+            "port": "9000",  # String converted to int
+            "debug": "true"  # String converted to bool
+        })
+        ```
 
-    # Use Typed's validation logic (with arbitrary types allowed)
-    temp_instance = object.__new__(Typed)
-    temp_instance._Typed__dict = {}  # Initialize to avoid AttributeError
-    return temp_instance._is_value_valid_for_type(value, annotation)
+    Args:
+        validate_return (bool, optional): Whether to validate the return value against
+            the function's return type annotation. Defaults to False.
+        config (dict, optional): Additional Pydantic configuration options to override
+            the default settings.
+
+    Returns:
+        Callable: The decorated function with automatic parameter validation.
+
+    Raises:
+        ValidationError: If parameter validation fails or if return value validation
+            is enabled and the return value doesn't match the annotation.
+
+    Note:
+        This is a pre-configured version of Pydantic's `validate_call` decorator with
+        sensible defaults for use with morphic types and patterns.
+
+    See Also:
+        - `pydantic.validate_call`: The underlying Pydantic decorator
+        - `morphic.typed.Typed`: For creating validated data models
+        - `morphic.autoenum.AutoEnum`: For creating validated enumerations
+    """
+    return functools.partial(
+        validate_call,
+        config=dict(
+            ## Allow population of a field by it's original name and alias (if False, only alias is used)
+            populate_by_name=True,
+            ## Perform type checking of non-BaseModel types (if False, throws an error)
+            arbitrary_types_allowed=True,
+            ## Validate default values
+            validate_default=True,
+        ),
+    )(*args, **kwargs)
