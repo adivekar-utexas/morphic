@@ -3,14 +3,16 @@
 from abc import ABC
 from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple, Type, Union
 
+from .autoenum import AutoEnum
+
 
 def _is_abstract(cls: Type) -> bool:
     """Check if a class is abstract."""
     return ABC in cls.__bases__
 
 
-def _str_normalize(x: str, remove: Optional[Union[str, Tuple, List, Set]] = (" ", "-", "_")) -> str:
-    """Normalize string by removing specified characters and converting to lowercase."""
+def _str_normalize(x: Union[str, AutoEnum], remove: Optional[Union[str, Tuple, List, Set]] = (" ", "-", "_")) -> str:
+    """Normalize string or AutoEnum by removing specified characters and converting to lowercase."""
     if remove is None:
         remove = set()
     if isinstance(remove, str):
@@ -282,12 +284,12 @@ class Registry(ABC):
         for key in [cls.__name__] + _as_list(cls.aliases) + _as_list(cls._registry_keys()):
             if key is None:
                 continue
-            elif isinstance(key, str):
-                # Case-insensitive matching
+            elif isinstance(key, (str, AutoEnum)):
+                # Case-insensitive matching for strings and AutoEnum
                 key = _str_normalize(key)
             elif isinstance(key, tuple):
                 key = tuple(
-                    _str_normalize(key_part) if isinstance(key_part, str) else key_part for key_part in key
+                    _str_normalize(key_part) if isinstance(key_part, (str, AutoEnum)) else key_part for key_part in key
                 )
             keys_to_register.append(key)
 
@@ -398,12 +400,12 @@ class Registry(ABC):
             This method searches the entire registry and does not enforce hierarchical
             scoping like the `of()` method. Use `of()` for hierarchy-aware instantiation.
         """
-        if isinstance(key, str):
+        if isinstance(key, (str, AutoEnum)):
             subclasses = cls._registry.get(_str_normalize(key))
         elif isinstance(key, tuple):
             # Normalize tuple keys the same way as during registration
             normalized_key = tuple(
-                _str_normalize(key_part) if isinstance(key_part, str) else key_part for key_part in key
+                _str_normalize(key_part) if isinstance(key_part, (str, AutoEnum)) else key_part for key_part in key
             )
             subclasses = cls._registry.get(normalized_key)
         else:
@@ -537,19 +539,19 @@ class Registry(ABC):
             for class_key in class_keys:
                 if class_key is None:
                     continue
-                elif isinstance(class_key, str):
+                elif isinstance(class_key, (str, AutoEnum)):
                     if (
                         _str_normalize(class_key) == _str_normalize(registry_key)
-                        if isinstance(registry_key, str)
+                        if isinstance(registry_key, (str, AutoEnum))
                         else False
                     ):
                         return cls
                 elif isinstance(class_key, tuple) and isinstance(registry_key, tuple):
                     normalized_class_key = tuple(
-                        _str_normalize(k) if isinstance(k, str) else k for k in class_key
+                        _str_normalize(k) if isinstance(k, (str, AutoEnum)) else k for k in class_key
                     )
                     normalized_registry_key = tuple(
-                        _str_normalize(k) if isinstance(k, str) else k for k in registry_key
+                        _str_normalize(k) if isinstance(k, (str, AutoEnum)) else k for k in registry_key
                     )
                     if normalized_class_key == normalized_registry_key:
                         return cls
@@ -560,11 +562,11 @@ class Registry(ABC):
         matching_subclasses = {}
 
         # Normalize the search key
-        if isinstance(registry_key, str):
+        if isinstance(registry_key, (str, AutoEnum)):
             search_key = _str_normalize(registry_key)
         elif isinstance(registry_key, tuple):
             search_key = tuple(
-                _str_normalize(key_part) if isinstance(key_part, str) else key_part
+                _str_normalize(key_part) if isinstance(key_part, (str, AutoEnum)) else key_part
                 for key_part in registry_key
             )
         else:
@@ -720,7 +722,7 @@ class Registry(ABC):
         return None
 
     @classmethod
-    def of(cls, registry_key: Any = None, *args, **kwargs):
+    def of(cls, registry_key: Optional[Any] = None, *args, **kwargs):
         """
         Hierarchical factory method for creating instances of registered subclasses.
 

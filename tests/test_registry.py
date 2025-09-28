@@ -1601,3 +1601,530 @@ class TestRegistry:
 
         with pytest.raises(KeyError):
             Vehicles.of("Dog")
+
+    def test_autoenum_basic_registry_functionality(self):
+        """Test basic registry functionality with AutoEnum keys."""
+        from morphic.autoenum import AutoEnum, alias
+
+        # Define enum for animal types
+        class AnimalType(AutoEnum):
+            DOG = alias("canine", "pup")
+            CAT = alias("feline", "kitty")
+            BIRD = alias("avian", "flying")
+
+        class Animal(Registry, ABC):
+            @abstractmethod
+            def speak(self) -> str:
+                pass
+
+        class Dog(Animal):
+            aliases = [AnimalType.DOG]
+
+            def speak(self) -> str:
+                return "Woof!"
+
+        class Cat(Animal):
+            aliases = [AnimalType.CAT, "meow_maker"]
+
+            def speak(self) -> str:
+                return "Meow!"
+
+        # Test getting subclass by AutoEnum directly
+        DogClass = Animal.get_subclass(AnimalType.DOG)
+        assert DogClass is Dog
+
+        # Test getting subclass by AutoEnum alias
+        DogClass2 = Animal.get_subclass(AnimalType("canine"))
+        assert DogClass2 is Dog
+
+        DogClass3 = Animal.get_subclass(AnimalType("pup"))
+        assert DogClass3 is Dog
+
+        # Test getting subclass by AutoEnum for Cat
+        CatClass = Animal.get_subclass(AnimalType.CAT)
+        assert CatClass is Cat
+
+        CatClass2 = Animal.get_subclass(AnimalType("feline"))
+        assert CatClass2 is Cat
+
+        # Test mixing AutoEnum and string aliases
+        CatClass3 = Animal.get_subclass("meow_maker")
+        assert CatClass3 is Cat
+
+    def test_autoenum_case_insensitive_matching(self):
+        """Test AutoEnum case insensitive matching."""
+        from morphic.autoenum import AutoEnum, alias
+
+        class StatusType(AutoEnum):
+            ACTIVE = alias("running", "operational")
+            INACTIVE = alias("stopped", "disabled")
+
+        class Service(Registry, ABC):
+            pass
+
+        class ActiveService(Service):
+            aliases = [StatusType.ACTIVE]
+
+        class InactiveService(Service):
+            aliases = [StatusType.INACTIVE]
+
+        # Should work with different cases of AutoEnum values
+        ActiveClass = Service.get_subclass(StatusType("ACTIVE"))
+        assert ActiveClass is ActiveService
+
+        ActiveClass2 = Service.get_subclass(StatusType("active"))
+        assert ActiveClass2 is ActiveService
+
+        # Should work with AutoEnum aliases in different cases
+        ActiveClass3 = Service.get_subclass(StatusType("RUNNING"))
+        assert ActiveClass3 is ActiveService
+
+        ActiveClass4 = Service.get_subclass(StatusType("operational"))
+        assert ActiveClass4 is ActiveService
+
+    def test_autoenum_with_registry_keys_method(self):
+        """Test AutoEnum keys via _registry_keys method."""
+        from morphic.autoenum import AutoEnum, alias
+
+        class TaskType(AutoEnum):
+            CLASSIFICATION = alias("classify", "categorize")
+            REGRESSION = alias("regress", "predict")
+            CLUSTERING = alias("cluster", "group")
+
+        class MLAlgorithm(Registry, ABC):
+            pass
+
+        class LogisticRegression(MLAlgorithm):
+            @classmethod
+            def _registry_keys(cls):
+                return [TaskType.CLASSIFICATION, TaskType.REGRESSION]
+
+        class KMeans(MLAlgorithm):
+            @classmethod
+            def _registry_keys(cls):
+                return [TaskType.CLUSTERING]
+
+        # Test retrieval by AutoEnum from _registry_keys
+        LogRegClass = MLAlgorithm.get_subclass(TaskType.CLASSIFICATION)
+        assert LogRegClass is LogisticRegression
+
+        LogRegClass2 = MLAlgorithm.get_subclass(TaskType.REGRESSION)
+        assert LogRegClass2 is LogisticRegression
+
+        # Test retrieval by AutoEnum aliases
+        LogRegClass3 = MLAlgorithm.get_subclass(TaskType("classify"))
+        assert LogRegClass3 is LogisticRegression
+
+        LogRegClass4 = MLAlgorithm.get_subclass(TaskType("regress"))
+        assert LogRegClass4 is LogisticRegression
+
+        # Test clustering
+        KMeansClass = MLAlgorithm.get_subclass(TaskType.CLUSTERING)
+        assert KMeansClass is KMeans
+
+        KMeansClass2 = MLAlgorithm.get_subclass(TaskType("cluster"))
+        assert KMeansClass2 is KMeans
+
+    def test_autoenum_with_tuple_keys(self):
+        """Test AutoEnum values in tuple keys."""
+        from morphic.autoenum import AutoEnum, alias
+
+        class Protocol(AutoEnum):
+            HTTP = alias("web", "hypertext")
+            HTTPS = alias("secure_web", "ssl")
+            FTP = alias("file_transfer")
+
+        class ServiceCategory(AutoEnum):
+            WEB_SERVER = alias("web", "http_server")
+            FILE_SERVER = alias("file", "storage")
+
+        class NetworkService(Registry, ABC):
+            pass
+
+        class WebService(NetworkService):
+            @classmethod
+            def _registry_keys(cls):
+                return [
+                    (Protocol.HTTP, ServiceCategory.WEB_SERVER),
+                    (Protocol.HTTPS, ServiceCategory.WEB_SERVER),
+                    ("web", "service")
+                ]
+
+        class FileService(NetworkService):
+            @classmethod
+            def _registry_keys(cls):
+                return [
+                    (Protocol.FTP, ServiceCategory.FILE_SERVER)
+                ]
+
+        # Test tuple keys with AutoEnum
+        WebClass = NetworkService.get_subclass((Protocol.HTTP, ServiceCategory.WEB_SERVER))
+        assert WebClass is WebService
+
+        WebClass2 = NetworkService.get_subclass((Protocol.HTTPS, ServiceCategory.WEB_SERVER))
+        assert WebClass2 is WebService
+
+        # Test tuple keys with AutoEnum aliases
+        WebClass3 = NetworkService.get_subclass((Protocol("web"), ServiceCategory("web")))
+        assert WebClass3 is WebService
+
+        # Test file service
+        FileClass = NetworkService.get_subclass((Protocol.FTP, ServiceCategory.FILE_SERVER))
+        assert FileClass is FileService
+
+        FileClass2 = NetworkService.get_subclass((Protocol("file_transfer"), ServiceCategory("file")))
+        assert FileClass2 is FileService
+
+        # Test mixed string and AutoEnum in tuple
+        WebClass4 = NetworkService.get_subclass(("web", "service"))
+        assert WebClass4 is WebService
+
+    def test_autoenum_hierarchical_of_method(self):
+        """Test AutoEnum support in hierarchical 'of' factory method."""
+        from morphic.autoenum import AutoEnum, alias
+
+        class AnimalType(AutoEnum):
+            DOG = alias("canine", "puppy")
+            CAT = alias("feline", "kitten")
+            BIRD = alias("avian", "flying")
+
+        class Animal(Registry, ABC):
+            @abstractmethod
+            def speak(self) -> str:
+                pass
+
+        class Dog(Animal):
+            aliases = [AnimalType.DOG]
+
+            def __init__(self, name="Buddy"):
+                self.name = name
+
+            def speak(self) -> str:
+                return f"{self.name} says Woof!"
+
+        class Cat(Animal):
+            aliases = [AnimalType.CAT]
+
+            def __init__(self, name="Whiskers"):
+                self.name = name
+
+            def speak(self) -> str:
+                return f"{self.name} says Meow!"
+
+        # Test factory creation with AutoEnum
+        dog = Animal.of(AnimalType.DOG, name="Rex")
+        assert isinstance(dog, Dog)
+        assert dog.name == "Rex"
+        assert dog.speak() == "Rex says Woof!"
+
+        # Test factory creation with AutoEnum alias
+        dog2 = Animal.of(AnimalType("canine"), name="Buddy")
+        assert isinstance(dog2, Dog)
+        assert dog2.name == "Buddy"
+
+        cat = Animal.of(AnimalType.CAT, name="Shadow")
+        assert isinstance(cat, Cat)
+        assert cat.name == "Shadow"
+        assert cat.speak() == "Shadow says Meow!"
+
+        # Test factory creation with AutoEnum alias for cat
+        cat2 = Animal.of(AnimalType("feline"), name="Fluffy")
+        assert isinstance(cat2, Cat)
+        assert cat2.name == "Fluffy"
+
+        # Test direct concrete class instantiation
+        dog3 = Dog.of(name="Max")
+        assert isinstance(dog3, Dog)
+        assert dog3.name == "Max"
+
+        # Test that concrete class can also use matching AutoEnum
+        dog4 = Dog.of(AnimalType.DOG, name="Charlie")
+        assert isinstance(dog4, Dog)
+        assert dog4.name == "Charlie"
+
+    def test_autoenum_error_handling(self):
+        """Test proper error handling with AutoEnum keys."""
+        from morphic.autoenum import AutoEnum, alias
+
+        class TaskType(AutoEnum):
+            READ = alias("reading", "input")
+            WRITE = alias("writing", "output")
+
+        class DataProcessor(Registry, ABC):
+            pass
+
+        class Reader(DataProcessor):
+            aliases = [TaskType.READ]
+
+        # Test error when AutoEnum value not found
+        with pytest.raises(KeyError) as exc_info:
+            DataProcessor.get_subclass(TaskType.WRITE)
+
+        error_msg = str(exc_info.value)
+        assert "Could not find subclass" in error_msg
+        assert "Available keys are:" in error_msg
+
+        # Test that available keys include normalized AutoEnum values
+        available_keys = str(exc_info.value)
+        # The error should show normalized version of the available keys
+        assert "read" in available_keys.lower()  # Normalized version
+
+    def test_autoenum_normalization_consistency(self):
+        """Test that AutoEnum normalization is consistent with string normalization."""
+        from morphic.autoenum import AutoEnum, alias
+
+        class Status(AutoEnum):
+            ACTIVE_SERVICE = alias("running-service", "operational-service")
+            INACTIVE_SERVICE = alias("stopped-service", "disabled-service")
+
+        class Service(Registry, ABC):
+            pass
+
+        class ActiveService(Service):
+            # Use both AutoEnum and equivalent string
+            aliases = [Status.ACTIVE_SERVICE, "running-service"]
+
+        # All these should resolve to the same class due to normalization
+        assert Service.get_subclass(Status.ACTIVE_SERVICE) is ActiveService
+        assert Service.get_subclass(Status("running-service")) is ActiveService
+        assert Service.get_subclass(Status("operational-service")) is ActiveService
+        assert Service.get_subclass("running-service") is ActiveService
+        assert Service.get_subclass("running_service") is ActiveService
+        assert Service.get_subclass("Running Service") is ActiveService
+        assert Service.get_subclass("RUNNINGSERVICE") is ActiveService
+
+    def test_autoenum_mixed_with_string_aliases(self):
+        """Test mixing AutoEnum and string aliases in the same class."""
+        from morphic.autoenum import AutoEnum, alias
+
+        class Priority(AutoEnum):
+            HIGH = alias("urgent", "critical")
+            MEDIUM = alias("normal", "standard")
+            LOW = alias("minor", "trivial")
+
+        class Task(Registry, ABC):
+            pass
+
+        class HighPriorityTask(Task):
+            # Mix AutoEnum, string, and tuple aliases
+            aliases = [Priority.HIGH, "important", ("priority", "high")]
+
+        class MediumPriorityTask(Task):
+            aliases = [Priority.MEDIUM, "regular"]
+
+            @classmethod
+            def _registry_keys(cls):
+                return [("priority", "medium"), Priority("standard")]
+
+        # Test all different types of keys work
+        assert Task.get_subclass(Priority.HIGH) is HighPriorityTask
+        assert Task.get_subclass(Priority("urgent")) is HighPriorityTask
+        assert Task.get_subclass("important") is HighPriorityTask
+        assert Task.get_subclass(("priority", "high")) is HighPriorityTask
+
+        assert Task.get_subclass(Priority.MEDIUM) is MediumPriorityTask
+        assert Task.get_subclass(Priority("normal")) is MediumPriorityTask
+        assert Task.get_subclass("regular") is MediumPriorityTask
+        assert Task.get_subclass(("priority", "medium")) is MediumPriorityTask
+        assert Task.get_subclass(Priority("standard")) is MediumPriorityTask
+
+    def test_autoenum_factory_with_multiple_subclasses(self):
+        """Test AutoEnum with _allow_multiple_subclasses setting."""
+        from morphic.autoenum import AutoEnum, alias
+
+        class NotificationType(AutoEnum):
+            EMAIL = alias("mail", "electronic")
+            SMS = alias("text", "message")
+            PUSH = alias("notification", "alert")
+
+        class NotificationService(Registry, ABC):
+            _allow_multiple_subclasses = True
+
+            @abstractmethod
+            def send(self, message: str):
+                pass
+
+        class EmailService(NotificationService):
+            aliases = [NotificationType.EMAIL]
+
+            def send(self, message: str):
+                return f"Email: {message}"
+
+        class AlternateEmailService(NotificationService):
+            aliases = [NotificationType.EMAIL]  # Same as EmailService
+
+            def send(self, message: str):
+                return f"Alt Email: {message}"
+
+        class SMSService(NotificationService):
+            aliases = [NotificationType.SMS]
+
+            def send(self, message: str):
+                return f"SMS: {message}"
+
+        # Should return list when multiple subclasses registered to same AutoEnum
+        email_services = NotificationService.get_subclass(NotificationType.EMAIL)
+        assert isinstance(email_services, list)
+        assert len(email_services) == 2
+        assert EmailService in email_services
+        assert AlternateEmailService in email_services
+
+        # Should work with AutoEnum aliases too
+        email_services2 = NotificationService.get_subclass(NotificationType("mail"))
+        assert isinstance(email_services2, list)
+        assert len(email_services2) == 2
+
+        # Single registration should still return single class
+        sms_service = NotificationService.get_subclass(NotificationType.SMS)
+        assert sms_service is SMSService
+
+        # Test 'of' method behavior with multiple subclasses
+        with pytest.raises(TypeError, match="multiple subclasses"):
+            NotificationService.of(NotificationType.EMAIL, message="test")
+
+    def test_autoenum_with_complex_hierarchy(self):
+        """Test AutoEnum with complex inheritance hierarchy."""
+        from morphic.autoenum import AutoEnum, alias
+
+        class DataType(AutoEnum):
+            TEXT = alias("string", "textual")
+            IMAGE = alias("picture", "visual")
+            AUDIO = alias("sound", "voice")
+
+        class BaseProcessor(Registry, ABC):
+            @abstractmethod
+            def process(self, data):
+                pass
+
+        class TextProcessor(BaseProcessor, ABC):
+            data_type = DataType.TEXT
+
+        class ImageProcessor(BaseProcessor, ABC):
+            data_type = DataType.IMAGE
+
+        class NLPProcessor(TextProcessor):
+            aliases = [DataType.TEXT, "nlp"]
+
+            def __init__(self, data=None):
+                self.data = data
+
+            def process(self, data):
+                return f"NLP processing: {data or self.data}"
+
+        class ComputerVisionProcessor(ImageProcessor):
+            aliases = [DataType.IMAGE, "cv"]
+
+            def __init__(self, data=None):
+                self.data = data
+
+            def process(self, data):
+                return f"CV processing: {data or self.data}"
+
+        class AudioProcessor(BaseProcessor):
+            aliases = [DataType.AUDIO]
+
+            def __init__(self, data=None):
+                self.data = data
+
+            def process(self, data):
+                return f"Audio processing: {data or self.data}"
+
+        # Test hierarchical access with AutoEnum
+        assert BaseProcessor.get_subclass(DataType.TEXT) is NLPProcessor
+        assert BaseProcessor.get_subclass(DataType.IMAGE) is ComputerVisionProcessor
+        assert BaseProcessor.get_subclass(DataType.AUDIO) is AudioProcessor
+
+        # Test with AutoEnum aliases
+        assert BaseProcessor.get_subclass(DataType("string")) is NLPProcessor
+        assert BaseProcessor.get_subclass(DataType("picture")) is ComputerVisionProcessor
+        assert BaseProcessor.get_subclass(DataType("sound")) is AudioProcessor
+
+        # Test subclass-specific access
+        assert TextProcessor.get_subclass(DataType.TEXT) is NLPProcessor
+        assert ImageProcessor.get_subclass(DataType.IMAGE) is ComputerVisionProcessor
+
+        # Test hierarchical 'of' method
+        nlp = TextProcessor.of(DataType.TEXT, data="Hello world")
+        assert isinstance(nlp, NLPProcessor)
+
+        cv = ImageProcessor.of(DataType("picture"), data="image.jpg")
+        assert isinstance(cv, ComputerVisionProcessor)
+
+        audio = BaseProcessor.of(DataType.AUDIO, data="song.mp3")
+        assert isinstance(audio, AudioProcessor)
+
+    def test_user_scenario_example(self):
+        """Test the exact scenario provided by the user to ensure it works."""
+        from morphic.autoenum import AutoEnum, auto
+
+        # Create the exact scenario from the user's example
+        class AnimalType(AutoEnum):
+            CAT = auto()
+            DOG = auto()
+            BIRD = auto()
+
+        class AbstractAnimal(Registry, ABC):
+            @abstractmethod
+            def speak(self) -> str:
+                pass
+
+        class Dog(AbstractAnimal):
+            def __init__(self, name="Buddy"):
+                self.name = name
+
+            def speak(self) -> str:
+                return f"{self.name} says Woof!"
+
+        # Set additional keys using aliases
+        class Cat(AbstractAnimal):
+            aliases = [AnimalType.CAT]
+
+            def __init__(self, name="Whiskers"):
+                self.name = name
+
+            def speak(self) -> str:
+                return f"{self.name} says Meow!"
+
+        # Set additional keys using _registry_keys method
+        class Bird(AbstractAnimal):
+            @classmethod
+            def _registry_keys(cls):
+                return [AnimalType.BIRD]
+
+            def __init__(self, name="Tweety"):
+                self.name = name
+
+            def speak(self) -> str:
+                return f"{self.name} says Tweet!"
+
+        # Test getting subclass by class name (always works)
+        DogClass = AbstractAnimal.get_subclass('Dog')
+        assert DogClass is Dog
+        dog = DogClass(name='Sparky')
+        assert isinstance(dog, Dog)
+        assert dog.name == 'Sparky'
+
+        # Test getting subclass by AutoEnum (aliases)
+        CatClass = AbstractAnimal.get_subclass(AnimalType.CAT)
+        assert CatClass is Cat
+        cat = CatClass(name='Fluffy')
+        assert isinstance(cat, Cat)
+        assert cat.name == 'Fluffy'
+
+        # Test getting subclass by AutoEnum (_registry_keys)
+        BirdClass = AbstractAnimal.get_subclass(AnimalType.BIRD)
+        assert BirdClass is Bird
+        bird = BirdClass(name='Polly')
+        assert isinstance(bird, Bird)
+        assert bird.name == 'Polly'
+
+        # Test the factory method works too
+        cat2 = AbstractAnimal.of(AnimalType.CAT, name='Shadow')
+        assert isinstance(cat2, Cat)
+        assert cat2.name == 'Shadow'
+        assert cat2.speak() == "Shadow says Meow!"
+
+        bird2 = AbstractAnimal.of(AnimalType.BIRD, name='Chirpy')
+        assert isinstance(bird2, Bird)
+        assert bird2.name == 'Chirpy'
+        assert bird2.speak() == "Chirpy says Tweet!"
