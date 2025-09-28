@@ -55,7 +55,6 @@ source = "vcs"
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-addopts = "--cov=morphic --cov-report=term-missing --cov-report=html"
 
 [tool.ruff]
 line-length = 110

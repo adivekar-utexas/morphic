@@ -15,6 +15,7 @@ nav:
     - Registry System: user-guide/registry.md
     - AutoEnum: user-guide/autoenum.md
     - Typed: user-guide/typed.md
+    - Typed + Registry Integration: user-guide/typed-registry-integration.md
   - API Reference:
     - Overview: api/index.md
     - Registry: api/registry.md

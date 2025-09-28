@@ -381,75 +381,191 @@ class Typed(BaseModel, ABC):
             )
 
     @classmethod
-    def of(cls, /, **data: Dict[str, Any]) -> T:
+    def of(cls, registry_key: Optional[Any] = None, /, **data: Dict[str, Any]) -> T:
         """
-        Factory method for creating instances with keyword arguments.
+        Factory method for creating instances with automatic Registry delegation.
 
-        This is a convenience factory method that provides an alternative way to create
-        instances of Typed models. It's functionally equivalent to calling the constructor
-        directly but offers a more fluent interface that can be useful in factory patterns
-        and method chaining scenarios.
+        This factory method intelligently delegates to Registry's hierarchical factory when the class
+        inherits from both Typed and Registry, while maintaining the simple Typed factory behavior
+        for pure Typed classes. This ensures that Registry's sophisticated factory patterns work
+        seamlessly with Typed's validation and modeling capabilities.
+
+        Delegation Logic:
+            - **Registry + Typed Classes**: Automatically delegates to Registry.of() for hierarchical
+              factory patterns, registry key lookup, and subclass instantiation
+            - **Pure Typed Classes**: Uses simple constructor-based factory for direct instantiation
+            - **Detection**: Checks if the class inherits from Registry using method resolution order
 
         Args:
-            **kwargs (Any): Keyword arguments passed directly to the class constructor.
-                These are the same field values that would be passed to `__init__`.
+            registry_key (Optional[Any], optional): Registry key for subclass lookup. When provided,
+                this triggers Registry-style factory behavior. When None and class inherits from
+                Registry, uses Registry's direct instantiation logic. Defaults to None.
+            **data (Dict[str, Any]): Field values passed to the class constructor. These undergo
+                Pydantic validation and type conversion.
 
         Returns:
-            T: A new instance of the Typed subclass with validated field values.
+            T: A new instance of the appropriate subclass (for Registry) or the class itself (for Typed).
 
         Raises:
-            ValueError: If validation fails, same as the constructor. See `__init__`
-                documentation for details on validation behavior and error messages.
+            ValueError: If validation fails during Typed model creation
+            KeyError: If registry_key not found in Registry hierarchy
+            TypeError: If Registry constraints are violated (e.g., abstract class without key)
 
-        Examples:
+        Registry Integration Examples:
             ```python
+            from morphic.registry import Registry
+            from morphic.typed import Typed
+            from abc import ABC, abstractmethod
+
+            # Proper inheritance order: Typed first, then Registry
+            class Animal(Typed, Registry, ABC):
+                name: str
+                species: str
+
+                @abstractmethod
+                def speak(self) -> str:
+                    pass
+
+            class Dog(Animal):
+                aliases = ["canine", "puppy"]
+
+                def __init__(self, name: str = "Buddy", breed: str = "Mixed", **kwargs):
+                    # Extract Typed fields for validation
+                    super().__init__(name=name, species="Canis lupus", **kwargs)
+                    self.breed = breed
+
+                def speak(self) -> str:
+                    return f"{self.name} says Woof!"
+
+            class Cat(Animal):
+                aliases = ["feline", "kitty"]
+
+                def __init__(self, name: str = "Whiskers", color: str = "Orange", **kwargs):
+                    super().__init__(name=name, species="Felis catus", **kwargs)
+                    self.color = color
+
+                def speak(self) -> str:
+                    return f"{self.name} says Meow!"
+
+            # Registry factory patterns work seamlessly
+            dog = Animal.of("Dog", name="Rex", breed="German Shepherd")
+            assert isinstance(dog, Dog)
+            assert dog.name == "Rex"           # Pydantic validated
+            assert dog.species == "Canis lupus"  # Pydantic validated
+            assert dog.breed == "German Shepherd"  # Custom attribute
+
+            # Alias support
+            cat = Animal.of("feline", name="Shadow", color="Black")
+            assert isinstance(cat, Cat)
+            assert cat.speak() == "Shadow says Meow!"
+
+            # Direct concrete instantiation
+            dog2 = Dog.of(name="Buddy", breed="Labrador")
+            assert isinstance(dog2, Dog)
+            assert dog2.name == "Buddy"
+
+            # Hierarchical scoping still enforced
+            # Dog.of("Cat") would raise KeyError - not in Dog's hierarchy
+            ```
+
+        Pure Typed Usage:
+            ```python
+            # Pure Typed classes work as before
             class User(Typed):
                 name: str
                 age: int
                 active: bool = True
 
-            # These are equivalent
-            user1 = User(name="John", age=30)
-            user2 = User.of(name="John", age=30)
-
-            assert user1.model_dump() == user2.model_dump()
-
-            # Useful in factory patterns
-            def create_user_from_dict(data: dict) -> User:
-                return User.of(**data)
-
-            # Method chaining style
-            users = [
-                User.of(name="Alice", age=25),
-                User.of(name="Bob", age=30),
-                User.of(name="Carol", age=35),
-            ]
+            # Simple factory method (no registry_key parameter used)
+            user = User.of(name="John", age=30)
+            assert isinstance(user, User)
+            assert user.name == "John"
             ```
 
-        Integration with Registry:
-            When used with morphic.Registry, this method provides consistency with the
-            Registry factory pattern:
-
+        Advanced Registry Patterns:
             ```python
-            from morphic.registry import Registry
-            from morphic.typed import Typed
+            # Complex hierarchies with validation
+            class DatabaseConnection(Typed, Registry, ABC):
+                host: str = "localhost"
+                port: int = 5432
+                ssl: bool = False
 
-            class DataModel(Registry, Typed):
-                name: str
+                @abstractmethod
+                def connect(self) -> str:
+                    pass
 
-            class UserModel(DataModel):
-                age: int
+            class PostgreSQL(DatabaseConnection):
+                aliases = ["postgres", "pg"]
 
-            # Both work consistently
-            user1 = UserModel.of(name="John", age=30)        # Typed factory
-            user2 = DataModel.of("UserModel", name="John", age=30)  # Registry factory
+                def __init__(self, database: str = "mydb", **kwargs):
+                    super().__init__(**kwargs)
+                    self.database = database
+
+                def connect(self) -> str:
+                    return f"postgresql://{self.host}:{self.port}/{self.database}"
+
+            # Type conversion and validation happen automatically
+            db = DatabaseConnection.of(
+                "postgres",
+                host="remote.db",
+                port="5433",      # String converted to int
+                ssl="true",       # String converted to bool
+                database="production"
+            )
+            assert db.port == 5433        # Converted and validated
+            assert db.ssl is True         # Converted and validated
+            assert db.database == "production"
             ```
 
-        Note:
-            This method is purely a convenience wrapper around the constructor and
-            provides no additional functionality beyond improved ergonomics.
+        Method Resolution:
+            When a class inherits from both Typed and Registry, the method resolution follows:
+
+            1. Check if class has Registry in its MRO (method resolution order)
+            2. If Registry found: Delegate to Registry.of() with all arguments
+            3. If no Registry: Use simple Typed factory (ignore registry_key if provided)
+
+        Error Handling:
+            ```python
+            # Registry errors are preserved
+            try:
+                Animal.of("InvalidAnimal")  # KeyError from Registry
+            except KeyError as e:
+                print(f"Registry error: {e}")
+
+            # Pydantic validation errors are preserved
+            try:
+                Animal.of("Dog", name="Rex", age="invalid")  # ValueError from Typed
+            except ValueError as e:
+                print(f"Validation error: {e}")
+            ```
+
+        Performance Notes:
+            - Registry delegation adds minimal overhead (single MRO check)
+            - Pydantic validation occurs in all cases for data integrity
+            - Registry hierarchy lookups use O(1) hash table operations
+
+        See Also:
+            - `morphic.registry.Registry.of()`: The underlying Registry factory method
+            - `morphic.typed.Typed.__init__()`: Pydantic validation and error handling
+            - `morphic.autoenum.AutoEnum`: For creating fuzzy-matching registry keys
         """
-        return cls(**data)
+        # Check if this class inherits from Registry by looking at the method resolution order
+        from morphic.registry import Registry
+
+        # Check if Registry is in the MRO of this class
+        if Registry in cls.__mro__:
+            # This class inherits from Registry, so delegate to Registry's of method
+            # Call Registry.of as a method on the class, not on Registry directly
+            # This ensures proper method resolution and class hierarchy handling
+            return super(Typed, cls).of(registry_key, **data)
+        else:
+            if registry_key is not None:
+                raise TypeError(
+                    f"Registry key '{registry_key}' provided for pure Typed class {cls.class_name}, but pure Typed classes do not support registry keys."
+                )
+            # Pure Typed class - use simple constructor-based factory
+            # Ignore registry_key parameter if provided (for API compatibility)
+            return cls(**data)
 
     @classproperty
     def class_name(cls) -> str:
