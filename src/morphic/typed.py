@@ -8,13 +8,14 @@ from typing import (
     Any,
     ClassVar,
     Dict,
+    NoReturn,
     Optional,
     Set,
     Tuple,
     TypeVar,
 )
 
-from pydantic import BaseModel, ConfigDict, ValidationError, validate_call
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator, validate_call
 
 
 def format_exception_msg(ex: Exception, short: bool = False, prefix: Optional[str] = None) -> str:
@@ -356,14 +357,23 @@ class Typed(BaseModel, ABC):
             for error_i, error in enumerate(e.errors()):
                 assert isinstance(error, dict)
                 error_msg: str = textwrap.indent(error.get("msg", ""), "    ").strip()
-                errors_str += f"\n[Error#{error_i + 1}] ValidationError in {error['loc']}: {error_msg}"
+                errors_str += "\n"
+                errors_str += textwrap.indent(f"[Error#{error_i + 1}] ValidationError:\n{error_msg}", "  ")
                 if isinstance(error["input"], dict):
-                    errors_str += (
-                        f"\n[Error#{error_i + 1}] Input keys: {_Typed_pformat(error['input'].keys())}"
+                    errors_str += "\n"
+                    errors_str += textwrap.indent(
+                        f"[Error#{error_i + 1}] Input keys: {_Typed_pformat(tuple(error['input'].keys()))}",
+                        "  ",
                     )
-                    errors_str += f"\n[Error#{error_i + 1}] Input values: {_Typed_pformat(error['input'])}"
+                    errors_str += "\n"
+                    errors_str += textwrap.indent(
+                        f"[Error#{error_i + 1}] Input values: {_Typed_pformat(error['input'])}", "  "
+                    )
                 else:
-                    errors_str += f"\n[Error#{error_i + 1}] Input: {_Typed_pformat(error['input'])}"
+                    errors_str += "\n"
+                    errors_str += textwrap.indent(
+                        f"[Error#{error_i + 1}] Input: {_Typed_pformat(error['input'])}", "  "
+                    )
             raise ValueError(
                 f"Cannot create Pydantic instance of type '{self.class_name}' {self.__class__}, "
                 f"encountered following validation errors: {errors_str}"
@@ -725,6 +735,289 @@ class Typed(BaseModel, ABC):
         params_str: str = self.model_dump_json(indent=4)
         out: str = f"{self.class_name}:\n{params_str}"
         return out
+
+    @classmethod
+    def _set_default_param_values(cls, params: Dict):
+        assert isinstance(params, dict)
+        ## Apply default values for fields not present in the input
+        for field_name, field in cls.model_fields.items():
+            if field_name not in params:
+                if field.default is not None:
+                    params[field_name] = field.default
+                elif field.default_factory is not None:
+                    params[field_name] = field.default_factory()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_inputs(cls, data: Dict) -> Dict:
+        cls._set_default_param_values(data)
+        cls.validate_inputs(data)
+        return data
+
+    @classmethod
+    def validate_inputs(cls, data: Dict) -> NoReturn:
+        """
+        Hook method for custom input validation and mutation before Pydantic model creation.
+
+        This method is called during the Pydantic validation process (via `@model_validator(mode="before")`)
+        and allows subclasses to perform custom validation and mutation of input data before the 
+        Pydantic model is instantiated. Since it's called before model creation, the data dictionary
+        can be freely modified, and these changes will be reflected in the final model instance.
+
+        Key Features:
+            - **Pre-validation Hook**: Called before Pydantic's field validation
+            - **Mutable Data**: Can modify the input dictionary directly
+            - **Early Validation**: Allows custom validation logic before type conversion
+            - **Data Enrichment**: Can add computed fields or transform existing ones
+            - **Error Handling**: Can raise custom validation errors with detailed messages
+
+        Execution Order:
+            1. `_set_default_param_values()` - Apply default values for missing fields
+            2. `validate_inputs()` - Custom validation and mutation (this method)
+            3. Pydantic field validation - Type conversion and constraint validation
+            4. Pydantic model validators - Any `@model_validator(mode="after")` methods
+
+        Args:
+            data (Dict): The input data dictionary passed to the model constructor or
+                `model_validate()`. This dictionary is mutable and can be modified in-place.
+                Keys represent field names and values represent the raw input values.
+
+        Returns:
+            NoReturn: This method should not return anything. All modifications should be
+                made to the `data` dictionary in-place.
+
+        Raises:
+            ValueError: Should raise ValueError (or subclasses) for validation failures.
+                The error message will be wrapped by Typed's enhanced error handling.
+            Any other exception: Will be caught and wrapped by Typed's error handling system.
+
+        Examples:
+            Basic Input Validation:
+                ```python
+                class User(Typed):
+                    name: str
+                    email: str
+                    age: int
+
+                    @classmethod
+                    def validate_inputs(cls, data: Dict) -> NoReturn:
+                        # Normalize email to lowercase
+                        if 'email' in data:
+                            data['email'] = data['email'].lower()
+                        
+                        # Validate age range
+                        if 'age' in data and isinstance(data['age'], (int, str)):
+                            age = int(data['age']) if isinstance(data['age'], str) else data['age']
+                            if age < 0 or age > 150:
+                                raise ValueError(f"Age must be between 0 and 150, got {age}")
+
+                # Usage - email gets normalized, age gets validated
+                user = User(name="John", email="JOHN@EXAMPLE.COM", age=30)
+                assert user.email == "john@example.com"
+
+                # Invalid age raises error before model creation
+                try:
+                    User(name="John", email="john@example.com", age=200)
+                except ValueError as e:
+                    print(e)  # "Age must be between 0 and 150, got 200"
+                ```
+
+            Data Enrichment and Computed Fields:
+                ```python
+                class Product(Typed):
+                    name: str
+                    price: float
+                    tax_rate: float = 0.1
+                    total_price: Optional[float] = None  # Will be computed
+
+                    @classmethod
+                    def validate_inputs(cls, data: Dict) -> NoReturn:
+                        # Compute total price if not provided
+                        if 'total_price' not in data and 'price' in data:
+                            price = float(data['price'])
+                            tax_rate = float(data.get('tax_rate', 0.1))
+                            data['total_price'] = price * (1 + tax_rate)
+                        
+                        # Normalize product name
+                        if 'name' in data:
+                            data['name'] = data['name'].strip().title()
+
+                # Usage - total_price gets computed automatically
+                product = Product(name="  laptop  ", price=1000)
+                assert product.name == "Laptop"
+                assert product.total_price == 1100.0  # 1000 * 1.1
+                ```
+
+            Complex Validation with Multiple Fields:
+                ```python
+                class DateRange(Typed):
+                    start_date: str
+                    end_date: str
+                    duration_days: Optional[int] = None
+
+                    @classmethod
+                    def validate_inputs(cls, data: Dict) -> NoReturn:
+                        from datetime import datetime
+                        
+                        # Parse and validate dates
+                        if 'start_date' in data and 'end_date' in data:
+                            try:
+                                start = datetime.fromisoformat(data['start_date'])
+                                end = datetime.fromisoformat(data['end_date'])
+                            except ValueError as e:
+                                raise ValueError(f"Invalid date format: {e}")
+                            
+                            # Validate date order
+                            if start >= end:
+                                raise ValueError("start_date must be before end_date")
+                            
+                            # Compute duration if not provided
+                            if 'duration_days' not in data:
+                                data['duration_days'] = (end - start).days
+
+                # Usage - dates get validated and duration computed
+                date_range = DateRange(
+                    start_date="2024-01-01",
+                    end_date="2024-01-10"
+                )
+                assert date_range.duration_days == 9
+                ```
+
+            Conditional Field Processing:
+                ```python
+                class APIRequest(Typed):
+                    method: str
+                    url: str
+                    headers: Optional[Dict[str, str]] = None
+                    body: Optional[str] = None
+
+                    @classmethod
+                    def validate_inputs(cls, data: Dict) -> NoReturn:
+                        # Normalize HTTP method
+                        if 'method' in data:
+                            data['method'] = data['method'].upper()
+                        
+                        # Add default headers if not provided
+                        if 'headers' not in data:
+                            data['headers'] = {}
+                        
+                        # For POST/PUT requests, ensure Content-Type is set
+                        method = data.get('method', '').upper()
+                        if method in ['POST', 'PUT', 'PATCH'] and 'body' in data:
+                            headers = data['headers']
+                            if 'Content-Type' not in headers:
+                                headers['Content-Type'] = 'application/json'
+                        
+                        # Validate URL format
+                        url = data.get('url', '')
+                        if url and not (url.startswith('http://') or url.startswith('https://')):
+                            raise ValueError(f"URL must start with http:// or https://, got: {url}")
+
+                # Usage - method normalized, headers added, URL validated
+                request = APIRequest(
+                    method="post",
+                    url="https://api.example.com/users",
+                    body='{"name": "John"}'
+                )
+                assert request.method == "POST"
+                assert request.headers["Content-Type"] == "application/json"
+                ```
+
+        Advanced Patterns:
+            Validation with External Dependencies:
+                ```python
+                class UserAccount(Typed):
+                    username: str
+                    email: str
+                    role: str = "user"
+
+                    @classmethod
+                    def validate_inputs(cls, data: Dict) -> NoReturn:
+                        # Validate username format
+                        username = data.get('username', '')
+                        if username and not username.isalnum():
+                            raise ValueError("Username must be alphanumeric")
+                        
+                        # Validate email format (basic check)
+                        email = data.get('email', '')
+                        if email and '@' not in email:
+                            raise ValueError("Invalid email format")
+                        
+                        # Validate role against allowed values
+                        role = data.get('role', 'user')
+                        allowed_roles = ['user', 'admin', 'moderator']
+                        if role not in allowed_roles:
+                            raise ValueError(f"Role must be one of {allowed_roles}, got: {role}")
+                ```
+
+        Integration with Registry and AutoEnum:
+            ```python
+            from morphic.autoenum import AutoEnum, auto
+            from morphic.registry import Registry
+
+            class Status(AutoEnum):
+                ACTIVE = auto()
+                INACTIVE = auto()
+                PENDING = auto()
+
+            class Task(Typed, Registry):
+                title: str
+                status: Status = Status.PENDING
+                priority: int = 1
+
+                @classmethod
+                def validate_inputs(cls, data: Dict) -> NoReturn:
+                    # Normalize title
+                    if 'title' in data:
+                        data['title'] = data['title'].strip()
+                        if not data['title']:
+                            raise ValueError("Title cannot be empty")
+                    
+                    # Clamp priority to valid range
+                    if 'priority' in data:
+                        priority = int(data['priority'])
+                        data['priority'] = max(1, min(10, priority))  # Clamp to 1-10
+                    
+                    # Auto-assign status based on priority
+                    if 'status' not in data:
+                        priority = int(data.get('priority', 1))
+                        if priority >= 8:
+                            data['status'] = Status.ACTIVE
+                        else:
+                            data['status'] = Status.PENDING
+
+            # Usage with Registry factory
+            task = Task.of(title="  Important Task  ", priority=15)
+            assert task.title == "Important Task"
+            assert task.priority == 10  # Clamped from 15
+            assert task.status == Status.ACTIVE  # Auto-assigned
+            ```
+
+        Error Handling Best Practices:
+            - Raise descriptive ValueError messages with context about what failed
+            - Include the problematic field name and value in error messages
+            - Use early returns or guard clauses for optional field validation
+            - Validate field dependencies and relationships
+            - Consider using helper methods for complex validation logic
+
+        Performance Considerations:
+            - This method is called for every model instantiation
+            - Avoid expensive operations like network calls or file I/O
+            - Cache validation results or patterns when possible
+            - Use lazy evaluation for optional validations
+
+        Thread Safety:
+            - This method operates on the input data dictionary, not the class
+            - Avoid modifying class-level attributes or shared state
+            - Each validation call receives its own data dictionary copy
+
+        See Also:
+            - `_set_default_param_values()`: Applies default values before validation
+            - `@model_validator(mode="after")`: Pydantic post-creation validation
+            - `@field_validator`: Field-level validation for specific fields
+            - `model_validate()`: Entry point for dictionary-to-model conversion
+        """
+        pass
 
 
 def validate(*args, **kwargs):

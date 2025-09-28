@@ -1,7 +1,7 @@
 """Comprehensive tests for Typed module."""
 
 from dataclasses import field
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, NoReturn, Optional, Union
 
 import pytest
 from pydantic import Field, ValidationError, field_validator
@@ -1403,6 +1403,421 @@ class TestNestedTypedConversion:
         assert isinstance(model.metadata, SimpleTyped)
         assert model.user.name == "John"
         assert model.metadata.active is False
+
+
+class TestValidateInputs:
+    """Comprehensive tests for validate_inputs method."""
+
+    def test_basic_validate_inputs_override(self):
+        """Test basic validate_inputs method override with data mutation."""
+        
+        class NormalizingModel(Typed):
+            name: str
+            email: str
+            
+            @classmethod
+            def validate_inputs(cls, data: Dict) -> NoReturn:
+                # Normalize name to title case
+                if 'name' in data:
+                    data['name'] = data['name'].strip().title()
+                
+                # Normalize email to lowercase
+                if 'email' in data:
+                    data['email'] = data['email'].lower().strip()
+        
+        # Test that mutations are applied
+        model = NormalizingModel(name="  john doe  ", email="  JOHN@EXAMPLE.COM  ")
+        assert model.name == "John Doe"
+        assert model.email == "john@example.com"
+    
+    def test_validate_inputs_with_model_validate(self):
+        """Test that validate_inputs works with model_validate."""
+        
+        class ValidatingModel(Typed):
+            username: str
+            age: int
+            
+            @classmethod
+            def validate_inputs(cls, data: Dict) -> NoReturn:
+                # Normalize username
+                if 'username' in data:
+                    data['username'] = data['username'].lower()
+                
+                # Validate age range
+                if 'age' in data:
+                    age = int(data['age']) if isinstance(data['age'], str) else data['age']
+                    if age < 0 or age > 120:
+                        raise ValueError(f"Age must be between 0 and 120, got {age}")
+        
+        # Test with model_validate
+        model = ValidatingModel.model_validate({
+            "username": "JohnDoe",
+            "age": "30"
+        })
+        assert model.username == "johndoe"
+        assert model.age == 30
+        
+        # Test validation error
+        with pytest.raises(ValueError, match="Age must be between 0 and 120, got 150"):
+            ValidatingModel.model_validate({"username": "test", "age": 150})
+
+    def test_validate_inputs_computed_fields(self):
+        """Test validate_inputs for computing derived fields."""
+        
+        class ProductModel(Typed):
+            name: str
+            price: float
+            tax_rate: float = 0.1
+            total_price: Optional[float] = None
+            
+            @classmethod
+            def validate_inputs(cls, data: Dict) -> NoReturn:
+                # Compute total price if not provided
+                if 'total_price' not in data and 'price' in data:
+                    price = float(data['price'])
+                    tax_rate = float(data.get('tax_rate', 0.1))
+                    data['total_price'] = price * (1 + tax_rate)
+                
+                # Normalize product name
+                if 'name' in data:
+                    data['name'] = data['name'].strip().title()
+        
+        # Test automatic computation
+        product = ProductModel(name="  laptop  ", price=1000)
+        assert product.name == "Laptop"
+        assert product.total_price == 1100.0
+        
+        # Test with custom tax rate
+        product2 = ProductModel(name="mouse", price=50, tax_rate=0.05)
+        assert product2.total_price == 52.5
+        
+        # Test when total_price is provided explicitly
+        product3 = ProductModel(name="keyboard", price=100, total_price=125)
+        assert product3.total_price == 125  # Not computed
+
+    def test_validate_inputs_conditional_logic(self):
+        """Test validate_inputs with conditional logic based on field values."""
+        
+        class APIRequestModel(Typed):
+            method: str
+            url: str
+            headers: Optional[Dict[str, str]] = None
+            body: Optional[str] = None
+            
+            @classmethod
+            def validate_inputs(cls, data: Dict) -> NoReturn:
+                # Normalize HTTP method
+                if 'method' in data:
+                    data['method'] = data['method'].upper()
+                
+                # Initialize headers if not provided
+                if 'headers' not in data:
+                    data['headers'] = {}
+                
+                # For POST/PUT requests with body, ensure Content-Type is set
+                method = data.get('method', '').upper()
+                if method in ['POST', 'PUT', 'PATCH'] and 'body' in data:
+                    headers = data['headers']
+                    if 'Content-Type' not in headers:
+                        headers['Content-Type'] = 'application/json'
+                
+                # Validate URL format
+                url = data.get('url', '')
+                if url and not (url.startswith('http://') or url.startswith('https://')):
+                    raise ValueError(f"URL must start with http:// or https://, got: {url}")
+        
+        # Test POST request with body
+        request = APIRequestModel(
+            method="post",
+            url="https://api.example.com/users",
+            body='{"name": "John"}'
+        )
+        assert request.method == "POST"
+        assert request.headers["Content-Type"] == "application/json"
+        
+        # Test GET request without body
+        get_request = APIRequestModel(method="get", url="https://api.example.com/users")
+        assert get_request.method == "GET"
+        assert "Content-Type" not in get_request.headers
+        
+        # Test invalid URL
+        with pytest.raises(ValueError, match="URL must start with http:// or https://"):
+            APIRequestModel(method="GET", url="ftp://invalid.com")
+
+    def test_validate_inputs_with_defaults(self):
+        """Test validate_inputs interaction with default values."""
+        
+        class ConfigModel(Typed):
+            host: str = "localhost"
+            port: int = 8080
+            debug: bool = False
+            full_url: Optional[str] = None
+            
+            @classmethod
+            def validate_inputs(cls, data: Dict) -> NoReturn:
+                # Compute full URL if not provided
+                if 'full_url' not in data:
+                    host = data.get('host', 'localhost')
+                    port = data.get('port', 8080)
+                    data['full_url'] = f"http://{host}:{port}"
+                
+                # Validate port range
+                if 'port' in data:
+                    port = int(data['port'])
+                    if port < 1 or port > 65535:
+                        raise ValueError(f"Port must be between 1 and 65535, got {port}")
+        
+        # Test with defaults
+        config = ConfigModel()
+        assert config.host == "localhost"
+        assert config.port == 8080
+        assert config.full_url == "http://localhost:8080"
+        
+        # Test with custom values
+        config2 = ConfigModel(host="example.com", port=9000)
+        assert config2.full_url == "http://example.com:9000"
+        
+        # Test invalid port
+        with pytest.raises(ValueError, match="Port must be between 1 and 65535"):
+            ConfigModel(port=70000)
+
+    def test_validate_inputs_error_handling(self):
+        """Test error handling in validate_inputs."""
+        
+        class StrictValidationModel(Typed):
+            username: str
+            password: str
+            
+            @classmethod
+            def validate_inputs(cls, data: Dict) -> NoReturn:
+                # Username validation
+                username = data.get('username', '')
+                if username:
+                    if len(username) < 3:
+                        raise ValueError("Username must be at least 3 characters long")
+                    if not username.isalnum():
+                        raise ValueError("Username must be alphanumeric")
+                
+                # Password validation
+                password = data.get('password', '')
+                if password:
+                    if len(password) < 8:
+                        raise ValueError("Password must be at least 8 characters long")
+                    if not any(c.isdigit() for c in password):
+                        raise ValueError("Password must contain at least one digit")
+        
+        # Test valid inputs
+        model = StrictValidationModel(username="user123", password="password1")
+        assert model.username == "user123"
+        
+        # Test username too short
+        with pytest.raises(ValueError, match="Username must be at least 3 characters long"):
+            StrictValidationModel(username="ab", password="password1")
+        
+        # Test username not alphanumeric
+        with pytest.raises(ValueError, match="Username must be alphanumeric"):
+            StrictValidationModel(username="user@123", password="password1")
+        
+        # Test password too short
+        with pytest.raises(ValueError, match="Password must be at least 8 characters long"):
+            StrictValidationModel(username="user123", password="short")
+        
+        # Test password without digit
+        with pytest.raises(ValueError, match="Password must contain at least one digit"):
+            StrictValidationModel(username="user123", password="password")
+
+    def test_validate_inputs_with_nested_types(self):
+        """Test validate_inputs with nested Typed objects."""
+        
+        class ContactInfo(Typed):
+            email: str
+            phone: Optional[str] = None
+            
+            @classmethod
+            def validate_inputs(cls, data: Dict) -> NoReturn:
+                # Normalize email
+                if 'email' in data:
+                    data['email'] = data['email'].lower()
+                
+                # Format phone number
+                if 'phone' in data and data['phone']:
+                    phone = data['phone']
+                    # Remove non-digits
+                    digits = ''.join(filter(str.isdigit, phone))
+                    if len(digits) == 10:
+                        data['phone'] = f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+                    elif len(digits) != 0:
+                        raise ValueError(f"Phone number must have 10 digits, got {len(digits)}")
+        
+        class PersonModel(Typed):
+            name: str
+            contact: ContactInfo
+            
+            @classmethod
+            def validate_inputs(cls, data: Dict) -> NoReturn:
+                # Normalize name
+                if 'name' in data:
+                    data['name'] = data['name'].strip().title()
+        
+        # Test with nested validation
+        person = PersonModel(
+            name="  john doe  ",
+            contact={
+                "email": "JOHN@EXAMPLE.COM",
+                "phone": "1234567890"
+            }
+        )
+        assert person.name == "John Doe"
+        assert person.contact.email == "john@example.com"
+        assert person.contact.phone == "(123) 456-7890"
+        
+        # Test nested validation error
+        with pytest.raises(ValueError, match="Phone number must have 10 digits"):
+            PersonModel(
+                name="John",
+                contact={"email": "john@example.com", "phone": "123"}
+            )
+
+    def test_validate_inputs_with_lists_and_dicts(self):
+        """Test validate_inputs with complex data structures."""
+        
+        class ProjectModel(Typed):
+            name: str
+            tags: List[str] = Field(default_factory=list)
+            metadata: Dict[str, str] = Field(default_factory=dict)
+            extra_field: Optional[str] = None
+            
+            @classmethod
+            def validate_inputs(cls, data: Dict) -> NoReturn:
+                # Add computed field based on raw name first
+                if 'name' in data and 'extra_field' not in data:
+                    data['extra_field'] = f"Project: {data['name']}"
+                
+                # Normalize project name
+                if 'name' in data:
+                    data['name'] = data['name'].strip().title()
+                
+                # Normalize tags to lowercase
+                if 'tags' in data and isinstance(data['tags'], list):
+                    data['tags'] = [tag.lower().strip() for tag in data['tags'] if tag.strip()]
+                
+                # Handle metadata if provided
+                if 'metadata' in data and isinstance(data['metadata'], dict):
+                    # Add creation timestamp if not present
+                    if 'created_at' not in data['metadata']:
+                        from datetime import datetime
+                        data['metadata']['created_at'] = datetime.now().isoformat()
+        
+        # Test with tags normalization
+        project = ProjectModel(
+            name="  my project  ",
+            tags=["  Python  ", "WEB", "  API  ", ""]
+        )
+        assert project.name == "My Project"
+        assert project.tags == ["python", "web", "api"]
+        assert project.extra_field == "Project:   my project  "  # Raw value before normalization
+        assert project.metadata == {}  # Default factory dict
+        
+        # Test with existing metadata
+        project2 = ProjectModel(
+            name="another project",
+            metadata={"version": "1.0"}
+        )
+        assert "created_at" in project2.metadata
+        assert project2.metadata["version"] == "1.0"
+        
+        # Test with metadata that already has created_at
+        project3 = ProjectModel(
+            name="third project",
+            metadata={"version": "1.0", "created_at": "2024-01-01"}
+        )
+        assert project3.metadata["created_at"] == "2024-01-01"  # Not overridden
+
+    def test_validate_inputs_execution_order(self):
+        """Test that validate_inputs is called at the right time in the validation process."""
+        
+        class OrderTestModel(Typed):
+            value: int
+            transformed_value: Optional[int] = None
+            
+            @classmethod
+            def validate_inputs(cls, data: Dict) -> NoReturn:
+                # This should be called before Pydantic field validation
+                # So we can work with raw input values
+                if 'value' in data:
+                    # Transform string to int ourselves
+                    if isinstance(data['value'], str):
+                        data['value'] = int(data['value']) * 2
+                    
+                    # Compute derived field
+                    data['transformed_value'] = data['value'] + 100
+        
+        # Test with string input that gets transformed
+        model = OrderTestModel(value="10")  # String "10" -> int 20 -> transformed 120
+        assert model.value == 20
+        assert model.transformed_value == 120
+        
+        # Test with int input
+        model2 = OrderTestModel(value=5)  # int 5 -> no string transformation -> transformed 105
+        assert model2.value == 5
+        assert model2.transformed_value == 105
+
+    def test_validate_inputs_inheritance(self):
+        """Test validate_inputs with class inheritance."""
+        
+        class BaseModel(Typed):
+            name: str
+            
+            @classmethod
+            def validate_inputs(cls, data: Dict) -> NoReturn:
+                # Base validation - normalize name
+                if 'name' in data:
+                    data['name'] = data['name'].strip().title()
+        
+        class ExtendedModel(BaseModel):
+            email: str
+            age: int
+            
+            @classmethod
+            def validate_inputs(cls, data: Dict) -> NoReturn:
+                # Call parent validation first
+                super().validate_inputs(data)
+                
+                # Additional validation
+                if 'email' in data:
+                    data['email'] = data['email'].lower()
+                
+                if 'age' in data:
+                    age = int(data['age']) if isinstance(data['age'], str) else data['age']
+                    if age < 0:
+                        raise ValueError("Age cannot be negative")
+        
+        # Test that both base and extended validations are applied
+        model = ExtendedModel(name="  john doe  ", email="JOHN@EXAMPLE.COM", age="30")
+        assert model.name == "John Doe"  # Base validation
+        assert model.email == "john@example.com"  # Extended validation
+        assert model.age == 30
+        
+        # Test extended validation error
+        with pytest.raises(ValueError, match="Age cannot be negative"):
+            ExtendedModel(name="John", email="john@example.com", age=-5)
+
+    def test_validate_inputs_no_override(self):
+        """Test that models work normally when validate_inputs is not overridden."""
+        
+        class SimpleModel(Typed):
+            name: str
+            value: int
+            # No validate_inputs override
+        
+        # Should work normally without any custom validation
+        model = SimpleModel(name="test", value=42)
+        assert model.name == "test"
+        assert model.value == 42
+        
+        # Should still get Pydantic validation
+        with pytest.raises(ValueError):  # Pydantic validation error wrapped by Typed
+            SimpleModel(name="test", value="not_a_number")
 
 
 class TestValidateCall:
