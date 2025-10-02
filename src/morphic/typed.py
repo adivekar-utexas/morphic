@@ -1466,6 +1466,63 @@ class Typed(BaseModel, ABC):
         pass
 
 
+class MutableTyped(Typed):
+    """
+    A mutable variant of Typed that allows field modification after instantiation.
+
+    Unlike the base Typed class which is frozen (immutable), MutableTyped instances
+    can have their fields modified after creation. This is useful when you need
+    to update model instances during runtime while still maintaining type validation.
+
+    Key Features:
+    - **Mutable**: Fields can be modified after instantiation
+    - **Validated**: All assignments are validated against field types
+    - **Type Safe**: Maintains the same type checking as Typed
+    - **Pydantic Compatible**: Built on Pydantic's validation system
+
+    Configuration:
+    - `frozen=False`: Allows field modification
+    - `validate_assignment=True`: Validates assignments on field modification
+
+    Examples:
+        >>> class User(MutableTyped):
+        ...     name: str
+        ...     age: int
+        ...     active: bool = True
+        ...
+        >>> user = User(name="John", age=30)
+        >>> user.name = "Jane"  # This works with MutableTyped
+        >>> user.age = 25       # This also works
+        >>> print(user.name)    # "Jane"
+
+        # Compare with regular Typed (frozen):
+        >>> class FrozenUser(Typed):
+        ...     name: str
+        ...     age: int
+        ...
+        >>> frozen_user = FrozenUser(name="John", age=30)
+        >>> frozen_user.name = "Jane"  # This would raise ValidationError
+
+    Validation:
+        All field assignments are validated against the declared types:
+
+        >>> user = User(name="John", age=30)
+        >>> user.age = "not_a_number"  # Raises ValidationError
+
+    See Also:
+        - `Typed`: The base frozen (immutable) class
+        - `validate()`: For function parameter validation
+        - Pydantic's `ConfigDict`: For advanced configuration options
+    """
+
+    model_config = ConfigDict(
+        ## Ref: https://docs.pydantic.dev/latest/api/config/#pydantic.config.ConfigDict.frozen
+        frozen=False,
+        ## Ref: https://docs.pydantic.dev/latest/api/config/#pydantic.config.ConfigDict.validate_assignment
+        validate_assignment=True,
+    )
+
+
 def validate(*args, **kwargs):
     """
     Function decorator for automatic parameter validation using Pydantic.

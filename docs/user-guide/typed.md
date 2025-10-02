@@ -15,12 +15,21 @@ Typed is built on Pydantic's BaseModel and provides a robust foundation for data
 - **Registry integration** - Works seamlessly with the Registry system
 - **AutoEnum support** - Automatic enum conversion with fuzzy matching
 
+## Typed vs MutableTyped
+
+Morphic provides two main data modeling classes:
+
+- **`Typed`** - Immutable models (frozen by default) for data integrity and functional programming patterns
+- **`MutableTyped`** - Mutable models that allow field modification after instantiation while maintaining validation
+
+Both classes share the same validation, type conversion, and feature set - the only difference is mutability.
+
 ## Basic Usage
 
 ### Simple Data Models
 
 ```python
-from morphic import Typed
+from morphic import Typed, MutableTyped
 from typing import Optional
 
 class UserModel(Typed):
@@ -45,6 +54,41 @@ try:
     user.name = "Bob"  # This will raise an error
 except ValidationError:
     print("Cannot modify immutable model")
+```
+
+### Mutable Data Models
+
+```python
+class MutableUserModel(MutableTyped):
+    name: str
+    email: str
+    age: int
+    is_active: bool = True
+    bio: Optional[str] = None
+
+# Create mutable instance
+mutable_user = MutableUserModel(
+    name="Alice Johnson",
+    email="alice@example.com",
+    age=30
+)
+
+print(f"Initial: {mutable_user.name}, Active: {mutable_user.is_active}")
+# Output: Initial: Alice Johnson, Active: True
+
+# Can modify fields after creation
+mutable_user.name = "Bob Smith"
+mutable_user.age = 31
+mutable_user.is_active = False
+
+print(f"Modified: {mutable_user.name}, Age: {mutable_user.age}, Active: {mutable_user.is_active}")
+# Output: Modified: Bob Smith, Age: 31, Active: False
+
+# All modifications are validated
+try:
+    mutable_user.age = "not_a_number"  # This will raise ValidationError
+except ValidationError:
+    print("Invalid type assignment rejected")
 ```
 
 ### Type Conversion and Validation
@@ -85,6 +129,31 @@ Typed leverages Pydantic's powerful configuration system to provide robust data 
 - `frozen=True` - Models are immutable by default
 - `validate_default=True` - Default values are validated
 - `arbitrary_types_allowed=True` - Custom types are supported
+
+### MutableTyped Configuration
+
+MutableTyped uses the same configuration as Typed with one key difference:
+
+- `frozen=False` - Models can be modified after instantiation
+- `validate_assignment=True` - All field assignments are validated
+
+```python
+class MutableConfig(MutableTyped):
+    name: str
+    value: int
+
+config = MutableConfig(name="test", value=42)
+
+# Can modify fields
+config.name = "updated"
+config.value = 100
+
+# All assignments are validated
+try:
+    config.value = "not_a_number"  # Raises ValidationError
+except ValidationError:
+    print("Assignment validation failed")
+```
 
 ## Default Value Validation and Conversion
 
@@ -188,6 +257,35 @@ except Exception:
 modified_list = list1.model_copy(update={"tasks": ["initial task", "new task"]})
 assert len(modified_list.tasks) == 2
 assert len(list1.tasks) == 1  # Original unchanged
+```
+
+### Mutable Models with Direct Modification
+
+MutableTyped allows direct field modification while maintaining validation:
+
+```python
+class MutableTaskList(MutableTyped):
+    name: str = "Default List"
+    tasks: List[str] = Field(default_factory=lambda: ["initial task"])
+    metadata: Dict[str, str] = Field(default_factory=lambda: {"created": "now"})
+
+# Create mutable instance
+mutable_list = MutableTaskList()
+
+# Can modify fields directly
+mutable_list.name = "Updated List"
+mutable_list.tasks = ["task1", "task2", "task3"]
+mutable_list.metadata = {"updated": "now", "version": "2.0"}
+
+print(f"Name: {mutable_list.name}")
+print(f"Tasks: {mutable_list.tasks}")
+print(f"Metadata: {mutable_list.metadata}")
+
+# All modifications are validated
+try:
+    mutable_list.tasks = "not_a_list"  # Raises ValidationError
+except ValidationError:
+    print("Invalid assignment rejected")
 ```
 
 ## Advanced Type Conversion
@@ -341,10 +439,15 @@ only_name = model.model_dump(include={'name'})
 Typed works seamlessly with the Registry system for polymorphic configurations:
 
 ```python
-from morphic import Typed, Registry
+from morphic import Typed, MutableTyped, Registry
 from abc import ABC, abstractmethod
 
 class ServiceConfig(Typed):
+    name: str
+    timeout: float = 30.0
+    retries: int = 3
+
+class MutableServiceConfig(MutableTyped):
     name: str
     timeout: float = 30.0
     retries: int = 3
@@ -374,6 +477,15 @@ db_service = Service.of("DatabaseService", config=db_config)
 
 print(web_service.process())
 # Output: Web service API (timeout: 60.0s)
+
+# MutableTyped can be used for dynamic configuration updates
+mutable_config = MutableServiceConfig(name="DynamicService", timeout=45.0)
+mutable_config.timeout = 90.0  # Can update configuration
+mutable_config.retries = 10
+
+dynamic_service = Service.of("WebService", config=mutable_config)
+print(dynamic_service.process())
+# Output: Web service DynamicService (timeout: 90.0s)
 ```
 
 ## AutoEnum Integration
@@ -381,7 +493,7 @@ print(web_service.process())
 Typed works with AutoEnum for type-safe enumeration handling:
 
 ```python
-from morphic import Typed, AutoEnum
+from morphic import Typed, MutableTyped, AutoEnum
 from enum import Enum
 
 class Priority(Enum):
@@ -410,6 +522,21 @@ class TaskWithDefault(Typed):
 
 default_task = TaskWithDefault(title="Review code")
 assert default_task.priority == Priority.LOW
+
+# MutableTyped allows priority updates
+class MutableTaskModel(MutableTyped):
+    title: str
+    priority: Priority = "medium"
+    completed: bool = False
+
+mutable_task = MutableTaskModel(title="Dynamic task", priority="low")
+
+# Can update priority
+mutable_task.priority = "high"
+mutable_task.completed = True
+
+assert mutable_task.priority == Priority.HIGH
+assert mutable_task.completed is True
 ```
 
 ## Validation Features
@@ -814,13 +941,25 @@ class TypedModel(Typed):
     # - Enhanced error handling
     # - AutoEnum support
     # - Additional morphic-specific utilities
+
+# MutableTyped for mutable models
+class MutableTypedModel(MutableTyped):
+    name: str
+    age: int
+    
+    # Same features as Typed but allows field modification
     
 # Both work similarly for basic operations
 model1 = PydanticModel(name="John", age=30)
 model2 = TypedModel(name="John", age=30)
+model3 = MutableTypedModel(name="John", age=30)
 
 # But Typed provides additional morphic integration
 # and is configured with sensible defaults for morphic use cases
+
+# MutableTyped allows modification
+model3.name = "Jane"
+model3.age = 25
 ```
 
 ## Edge Cases and Advanced Scenarios
@@ -1404,6 +1543,68 @@ processed = transform_data(
     filters={"active": True}
 )
 ```
+
+## Choosing Between Typed and MutableTyped
+
+### When to Use Typed (Immutable)
+
+Use `Typed` when you want:
+- **Data integrity** - Prevent accidental modifications
+- **Functional programming** - Immutable data structures
+- **Thread safety** - Immutable objects are inherently thread-safe
+- **Hashable objects** - Can be used as dictionary keys
+- **Configuration objects** - Settings that shouldn't change after creation
+
+```python
+class DatabaseConfig(Typed):
+    host: str
+    port: int
+    database: str
+
+# Configuration is immutable - prevents accidental changes
+config = DatabaseConfig(host="localhost", port=5432, database="myapp")
+# config.port = 3306  # This would raise an error
+```
+
+### When to Use MutableTyped
+
+Use `MutableTyped` when you need:
+- **Dynamic updates** - Fields that change during runtime
+- **State management** - Objects that represent changing state
+- **User input processing** - Forms or data that gets updated
+- **Caching objects** - Data that gets refreshed periodically
+- **Builder patterns** - Objects constructed incrementally
+
+```python
+class UserSession(MutableTyped):
+    user_id: str
+    login_time: datetime
+    last_activity: datetime
+    permissions: List[str] = []
+
+# Session state can be updated as user interacts
+session = UserSession(user_id="123", login_time=datetime.now())
+session.last_activity = datetime.now()
+session.permissions = ["read", "write"]
+```
+
+### Performance Considerations
+
+Both `Typed` and `MutableTyped` have similar performance characteristics:
+- **Creation time** - Identical validation and conversion
+- **Memory usage** - Same memory footprint
+- **Field access** - Same access speed
+- **Serialization** - Same serialization performance
+
+The only difference is assignment validation in `MutableTyped`, which adds minimal overhead.
+
+### Best Practices
+
+1. **Default to Typed** - Use immutable models unless you specifically need mutability
+2. **Use MutableTyped for state** - When objects represent changing state
+3. **Validate assignments** - All `MutableTyped` assignments are validated
+4. **Consider thread safety** - `Typed` is thread-safe, `MutableTyped` requires synchronization
+5. **Use appropriate patterns** - Immutable for functional, mutable for imperative
 
 ## Next Steps
 

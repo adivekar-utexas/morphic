@@ -1,12 +1,13 @@
 """Tests for integration between Typed and Registry patterns."""
 
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import Dict, List, Optional, Union
 
 import pytest
+from pydantic import ValidationError
 
 from morphic.registry import Registry
-from morphic.typed import Typed
+from morphic.typed import Typed, MutableTyped
 
 
 class TestTypedRegistryIntegration:
@@ -463,3 +464,412 @@ class TestTypedRegistryIntegration:
 
         # Should complete quickly (less than 1 second for 5 lookups with 20 registered classes)
         assert (end_time - start_time) < 1.0
+
+
+class TestMutableTypedRegistryIntegration:
+    """Test suite for integration between MutableTyped and Registry classes."""
+
+    def test_basic_mutable_typed_registry_inheritance(self):
+        """Test basic inheritance with MutableTyped and Registry."""
+
+        class Animal(MutableTyped, Registry, ABC):
+            name: str
+            species: str
+            age: int = 0
+
+            @abstractmethod
+            def speak(self) -> str:
+                pass
+
+        class Dog(Animal):
+            aliases = ["canine", "puppy"]
+
+            def speak(self) -> str:
+                return f"{self.name} says Woof!"
+
+        class Cat(Animal):
+            aliases = ["feline", "kitty"]
+
+            def speak(self) -> str:
+                return f"{self.name} says Meow!"
+
+        # Test Registry factory patterns work with MutableTyped
+        dog = Animal.of("Dog", name="Rex", species="Canis lupus", age=3)
+        assert isinstance(dog, Dog)
+        assert dog.name == "Rex"
+        assert dog.species == "Canis lupus"
+        assert dog.age == 3
+        assert dog.speak() == "Rex says Woof!"
+
+        # Test that MutableTyped instances can be modified
+        dog.name = "Rexy"
+        dog.age = 4
+        assert dog.name == "Rexy"
+        assert dog.age == 4
+        assert dog.speak() == "Rexy says Woof!"
+
+        # Test alias support with MutableTyped
+        cat = Animal.of("feline", name="Shadow", species="Felis catus", age=2)
+        assert isinstance(cat, Cat)
+        assert cat.name == "Shadow"
+        assert cat.species == "Felis catus"
+        assert cat.age == 2
+
+        # Test modification of cat
+        cat.name = "Shadowy"
+        cat.age = 3
+        assert cat.name == "Shadowy"
+        assert cat.age == 3
+
+    def test_mutable_typed_registry_validation_on_assignment(self):
+        """Test that MutableTyped validates assignments in Registry context."""
+
+        class Service(MutableTyped, Registry, ABC):
+            name: str
+            port: int
+            enabled: bool = True
+
+        class WebService(Service):
+            aliases = ["web", "http"]
+
+        # Create service through Registry
+        service = Service.of("WebService", name="api", port=8080)
+        assert isinstance(service, WebService)
+        assert service.name == "api"
+        assert service.port == 8080
+        assert service.enabled is True
+
+        # Valid assignments should work
+        service.name = "updated_api"
+        service.port = 9000
+        service.enabled = False
+        assert service.name == "updated_api"
+        assert service.port == 9000
+        assert service.enabled is False
+
+        # Invalid assignments should raise ValidationError
+        with pytest.raises(ValidationError, match="Input should be a valid integer"):
+            service.port = "not_a_number"
+
+        with pytest.raises(ValidationError, match="Input should be a valid boolean"):
+            service.enabled = "not_a_boolean"
+
+    def test_mutable_typed_registry_with_optional_fields(self):
+        """Test MutableTyped Registry with optional fields."""
+
+        class Configuration(MutableTyped, Registry, ABC):
+            name: str
+            enabled: bool = True
+            max_connections: Optional[int] = None
+            tags: List[str] = []
+
+        class DatabaseConfig(Configuration):
+            aliases = ["db", "database"]
+            connection_string: Optional[str] = None
+
+        # Create config through Registry
+        config = Configuration.of("DatabaseConfig", name="prod_db")
+        assert isinstance(config, DatabaseConfig)
+        assert config.name == "prod_db"
+        assert config.enabled is True
+        assert config.max_connections is None
+        assert config.tags == []
+        assert config.connection_string is None
+
+        # Modify optional fields
+        config.max_connections = 100
+        config.tags = ["production", "critical"]
+        config.connection_string = "postgresql://localhost/prod"
+
+        assert config.max_connections == 100
+        assert config.tags == ["production", "critical"]
+        assert config.connection_string == "postgresql://localhost/prod"
+
+        # Set to None
+        config.max_connections = None
+        config.connection_string = None
+        assert config.max_connections is None
+        assert config.connection_string is None
+
+    def test_mutable_typed_registry_with_nested_objects(self):
+        """Test MutableTyped Registry with nested Typed objects."""
+
+        class Address(Typed):
+            street: str
+            city: str
+            zipcode: str
+
+        class Person(MutableTyped, Registry, ABC):
+            name: str
+            age: int
+            address: Address
+
+        class Employee(Person):
+            aliases = ["worker", "staff"]
+            department: str = "general"
+
+        # Create employee through Registry
+        employee = Person.of(
+            "Employee",
+            name="Alice",
+            age=30,
+            address=Address(street="123 Main St", city="Springfield", zipcode="12345"),
+            department="engineering"
+        )
+        assert isinstance(employee, Employee)
+        assert employee.name == "Alice"
+        assert employee.age == 30
+        assert employee.department == "engineering"
+
+        # Modify employee fields
+        employee.name = "Alice Smith"
+        employee.age = 31
+        employee.department = "senior_engineering"
+
+        # Replace nested object
+        new_address = Address(street="456 Oak Ave", city="Metropolis", zipcode="54321")
+        employee.address = new_address
+
+        assert employee.name == "Alice Smith"
+        assert employee.age == 31
+        assert employee.department == "senior_engineering"
+        assert employee.address.street == "456 Oak Ave"
+        assert employee.address.city == "Metropolis"
+
+    def test_mutable_typed_registry_with_union_types(self):
+        """Test MutableTyped Registry with Union types."""
+
+        class FlexibleValue(MutableTyped, Registry, ABC):
+            name: str
+            value: Union[int, str]
+            count: int = 0
+
+        class IntValue(FlexibleValue):
+            aliases = ["int", "integer"]
+
+        class StrValue(FlexibleValue):
+            aliases = ["str", "string"]
+
+        # Create with int value
+        int_val = FlexibleValue.of("IntValue", name="counter", value=42)
+        assert isinstance(int_val, IntValue)
+        assert int_val.value == 42
+        assert isinstance(int_val.value, int)
+
+        # Change to string value
+        int_val.value = "hello"
+        assert int_val.value == "hello"
+        assert isinstance(int_val.value, str)
+
+        # Change back to int
+        int_val.value = 100
+        assert int_val.value == 100
+        assert isinstance(int_val.value, int)
+
+    def test_mutable_typed_registry_inheritance_chain(self):
+        """Test MutableTyped Registry with inheritance chains."""
+
+        class BaseService(MutableTyped, Registry, ABC):
+            name: str
+            version: str = "1.0"
+
+        class WebService(BaseService, ABC):
+            port: int = 80
+
+        class HTTPService(WebService):
+            aliases = ["http", "https"]
+            ssl: bool = False
+
+        # Create through inheritance chain
+        service = BaseService.of("HTTPService", name="api", port=8080, ssl=True)
+        assert isinstance(service, HTTPService)
+        assert service.name == "api"
+        assert service.version == "1.0"
+        assert service.port == 8080
+        assert service.ssl is True
+
+        # Modify fields from different levels
+        service.name = "updated_api"
+        service.version = "2.0"
+        service.port = 9000
+        service.ssl = False
+
+        assert service.name == "updated_api"
+        assert service.version == "2.0"
+        assert service.port == 9000
+        assert service.ssl is False
+
+    def test_mutable_typed_registry_with_autoenum(self):
+        """Test MutableTyped Registry with AutoEnum integration."""
+
+        from morphic.autoenum import AutoEnum, auto
+
+        class Status(AutoEnum):
+            PENDING = auto()
+            PROCESSING = auto()
+            COMPLETED = auto()
+
+        class Task(MutableTyped, Registry, ABC):
+            name: str
+            status: Status = Status.PENDING
+            priority: int = 1
+
+        class WorkTask(Task):
+            aliases = ["work", "job"]
+            assignee: str = "unassigned"
+
+        # Create task through Registry
+        task = Task.of("WorkTask", name="Fix bug", status=Status.PROCESSING, priority=3)
+        assert isinstance(task, WorkTask)
+        assert task.name == "Fix bug"
+        assert task.status == Status.PROCESSING
+        assert task.priority == 3
+        assert task.assignee == "unassigned"
+
+        # Modify task
+        task.name = "Fix critical bug"
+        task.status = Status.COMPLETED
+        task.priority = 5
+        task.assignee = "alice"
+
+        assert task.name == "Fix critical bug"
+        assert task.status == Status.COMPLETED
+        assert task.priority == 5
+        assert task.assignee == "alice"
+
+    def test_mutable_typed_registry_error_handling(self):
+        """Test error handling in MutableTyped Registry integration."""
+
+        class Service(MutableTyped, Registry, ABC):
+            name: str
+            port: int
+
+        class WebService(Service):
+            aliases = ["web"]
+
+        # Create service
+        service = Service.of("WebService", name="api", port=8080)
+
+        # Test Registry error (unknown service)
+        with pytest.raises(KeyError, match="Could not find subclass of Service"):
+            Service.of("UnknownService", name="test", port=80)
+
+        # Test validation error on creation
+        with pytest.raises(ValueError, match="Input should be a valid integer"):
+            Service.of("WebService", name="test", port="invalid")
+
+        # Test validation error on assignment
+        with pytest.raises(ValidationError, match="Input should be a valid integer"):
+            service.port = "not_a_number"
+
+    def test_mutable_typed_registry_performance(self):
+        """Test performance characteristics of MutableTyped Registry."""
+
+        class BaseService(MutableTyped, Registry, ABC):
+            name: str
+            value: int = 0
+
+        # Create many subclasses
+        subclasses = []
+        for i in range(10):
+            class_name = f"Service{i}"
+            cls = type(
+                class_name,
+                (BaseService,),
+                {
+                    "aliases": [f"svc{i}", f"service_{i}"],
+                },
+            )
+            subclasses.append(cls)
+
+        # Test creation and modification performance
+        import time
+
+        start_time = time.time()
+        services = []
+        for i in range(5):
+            service = BaseService.of(f"Service{i}", name=f"service_{i}")
+            # Modify the service
+            service.name = f"updated_service_{i}"
+            service.value = i * 10
+            services.append(service)
+        end_time = time.time()
+
+        # Should complete quickly
+        assert (end_time - start_time) < 1.0
+
+        # Verify modifications
+        for i, service in enumerate(services):
+            assert service.name == f"updated_service_{i}"
+            assert service.value == i * 10
+
+    def test_mutable_typed_registry_vs_typed_registry(self):
+        """Test comparison between MutableTyped and Typed Registry behavior."""
+
+        class ImmutableService(Typed, Registry, ABC):
+            name: str
+            port: int
+
+        class MutableService(MutableTyped, Registry, ABC):
+            name: str
+            port: int
+
+        class WebService(ImmutableService):
+            aliases = ["web_immutable"]
+
+        class MutableWebService(MutableService):
+            aliases = ["web_mutable"]
+
+        # Create both types
+        immutable = ImmutableService.of("WebService", name="api", port=8080)
+        mutable = MutableService.of("MutableWebService", name="api", port=8080)
+
+        # Both should have same initial values
+        assert immutable.name == mutable.name
+        assert immutable.port == mutable.port
+
+        # Immutable should not be modifiable
+        with pytest.raises(ValidationError, match="Instance is frozen"):
+            immutable.name = "updated"
+
+        # Mutable should be modifiable
+        mutable.name = "updated"
+        mutable.port = 9000
+        assert mutable.name == "updated"
+        assert mutable.port == 9000
+
+    def test_mutable_typed_registry_serialization(self):
+        """Test serialization with MutableTyped Registry."""
+
+        class Config(MutableTyped, Registry, ABC):
+            name: str
+            settings: Dict[str, str] = {}
+
+        class AppConfig(Config):
+            aliases = ["app", "application"]
+            version: str = "1.0"
+
+        # Create config
+        config = Config.of("AppConfig", name="myapp", settings={"key1": "value1"})
+        assert isinstance(config, AppConfig)
+
+        # Modify config
+        config.name = "updated_app"
+        config.settings = {"key1": "updated_value", "key2": "value2"}
+        config.version = "2.0"
+
+        # Test serialization
+        config_dict = config.model_dump()
+        assert config_dict["name"] == "updated_app"
+        assert config_dict["settings"] == {"key1": "updated_value", "key2": "value2"}
+        assert config_dict["version"] == "2.0"
+
+        # Test deserialization
+        restored_config = AppConfig.model_validate(config_dict)
+        assert restored_config.name == "updated_app"
+        assert restored_config.settings == {"key1": "updated_value", "key2": "value2"}
+        assert restored_config.version == "2.0"
+
+        # Restored config should also be mutable
+        restored_config.name = "restored_app"
+        assert restored_config.name == "restored_app"

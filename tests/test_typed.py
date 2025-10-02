@@ -7,7 +7,7 @@ import pytest
 from pydantic import Field, ValidationError, field_validator
 
 from morphic.autoenum import AutoEnum, alias, auto
-from morphic.typed import Typed
+from morphic.typed import MutableTyped, Typed
 
 
 # Test fixtures and helper classes
@@ -1410,353 +1410,331 @@ class TestValidateInputs:
 
     def test_basic_validate_inputs_override(self):
         """Test basic validate method override with data mutation."""
-        
+
         class NormalizingModel(Typed):
             name: str
             email: str
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
                 # Normalize name to title case
-                if 'name' in data:
-                    data['name'] = data['name'].strip().title()
-                
+                if "name" in data:
+                    data["name"] = data["name"].strip().title()
+
                 # Normalize email to lowercase
-                if 'email' in data:
-                    data['email'] = data['email'].lower().strip()
-        
+                if "email" in data:
+                    data["email"] = data["email"].lower().strip()
+
         # Test that mutations are applied
         model = NormalizingModel(name="  john doe  ", email="  JOHN@EXAMPLE.COM  ")
         assert model.name == "John Doe"
         assert model.email == "john@example.com"
-    
+
     def test_validate_inputs_with_model_validate(self):
         """Test that validate works with model_validate."""
-        
+
         class ValidatingModel(Typed):
             username: str
             age: int
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
                 # Normalize username
-                if 'username' in data:
-                    data['username'] = data['username'].lower()
-                
+                if "username" in data:
+                    data["username"] = data["username"].lower()
+
                 # Validate age range
-                if 'age' in data:
-                    age = int(data['age']) if isinstance(data['age'], str) else data['age']
+                if "age" in data:
+                    age = int(data["age"]) if isinstance(data["age"], str) else data["age"]
                     if age < 0 or age > 120:
                         raise ValueError(f"Age must be between 0 and 120, got {age}")
-        
+
         # Test with model_validate
-        model = ValidatingModel.model_validate({
-            "username": "JohnDoe",
-            "age": "30"
-        })
+        model = ValidatingModel.model_validate({"username": "JohnDoe", "age": "30"})
         assert model.username == "johndoe"
         assert model.age == 30
-        
+
         # Test validation error
         with pytest.raises(ValueError, match="Age must be between 0 and 120, got 150"):
             ValidatingModel.model_validate({"username": "test", "age": 150})
 
     def test_validate_inputs_computed_fields(self):
         """Test validate for computing derived fields."""
-        
+
         class ProductModel(Typed):
             name: str
             price: float
             tax_rate: float = 0.1
             total_price: Optional[float] = None
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
                 # Compute total price if not provided
-                if 'total_price' not in data and 'price' in data:
-                    price = float(data['price'])
-                    tax_rate = float(data.get('tax_rate', 0.1))
-                    data['total_price'] = price * (1 + tax_rate)
-                
+                if "total_price" not in data and "price" in data:
+                    price = float(data["price"])
+                    tax_rate = float(data.get("tax_rate", 0.1))
+                    data["total_price"] = price * (1 + tax_rate)
+
                 # Normalize product name
-                if 'name' in data:
-                    data['name'] = data['name'].strip().title()
-        
+                if "name" in data:
+                    data["name"] = data["name"].strip().title()
+
         # Test automatic computation
         product = ProductModel(name="  laptop  ", price=1000)
         assert product.name == "Laptop"
         assert product.total_price == 1100.0
-        
+
         # Test with custom tax rate
         product2 = ProductModel(name="mouse", price=50, tax_rate=0.05)
         assert product2.total_price == 52.5
-        
+
         # Test when total_price is provided explicitly
         product3 = ProductModel(name="keyboard", price=100, total_price=125)
         assert product3.total_price == 125  # Not computed
 
     def test_validate_inputs_conditional_logic(self):
         """Test validate with conditional logic based on field values."""
-        
+
         class APIRequestModel(Typed):
             method: str
             url: str
             headers: Optional[Dict[str, str]] = None
             body: Optional[str] = None
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
                 # Normalize HTTP method
-                if 'method' in data:
-                    data['method'] = data['method'].upper()
-                
+                if "method" in data:
+                    data["method"] = data["method"].upper()
+
                 # Initialize headers if not provided
-                if 'headers' not in data:
-                    data['headers'] = {}
-                
+                if "headers" not in data:
+                    data["headers"] = {}
+
                 # For POST/PUT requests with body, ensure Content-Type is set
-                method = data.get('method', '').upper()
-                if method in ['POST', 'PUT', 'PATCH'] and 'body' in data:
-                    headers = data['headers']
-                    if 'Content-Type' not in headers:
-                        headers['Content-Type'] = 'application/json'
-                
+                method = data.get("method", "").upper()
+                if method in ["POST", "PUT", "PATCH"] and "body" in data:
+                    headers = data["headers"]
+                    if "Content-Type" not in headers:
+                        headers["Content-Type"] = "application/json"
+
                 # Validate URL format
-                url = data.get('url', '')
-                if url and not (url.startswith('http://') or url.startswith('https://')):
+                url = data.get("url", "")
+                if url and not (url.startswith("http://") or url.startswith("https://")):
                     raise ValueError(f"URL must start with http:// or https://, got: {url}")
-        
+
         # Test POST request with body
-        request = APIRequestModel(
-            method="post",
-            url="https://api.example.com/users",
-            body='{"name": "John"}'
-        )
+        request = APIRequestModel(method="post", url="https://api.example.com/users", body='{"name": "John"}')
         assert request.method == "POST"
         assert request.headers["Content-Type"] == "application/json"
-        
+
         # Test GET request without body
         get_request = APIRequestModel(method="get", url="https://api.example.com/users")
         assert get_request.method == "GET"
         assert "Content-Type" not in get_request.headers
-        
+
         # Test invalid URL
         with pytest.raises(ValueError, match="URL must start with http:// or https://"):
             APIRequestModel(method="GET", url="ftp://invalid.com")
 
     def test_validate_inputs_with_defaults(self):
         """Test validate interaction with default values."""
-        
+
         class ConfigModel(Typed):
             host: str = "localhost"
             port: int = 8080
             debug: bool = False
             full_url: Optional[str] = None
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
                 # Compute full URL if not provided
-                if 'full_url' not in data:
-                    host = data.get('host', 'localhost')
-                    port = data.get('port', 8080)
-                    data['full_url'] = f"http://{host}:{port}"
-                
+                if "full_url" not in data:
+                    host = data.get("host", "localhost")
+                    port = data.get("port", 8080)
+                    data["full_url"] = f"http://{host}:{port}"
+
                 # Validate port range
-                if 'port' in data:
-                    port = int(data['port'])
+                if "port" in data:
+                    port = int(data["port"])
                     if port < 1 or port > 65535:
                         raise ValueError(f"Port must be between 1 and 65535, got {port}")
-        
+
         # Test with defaults
         config = ConfigModel()
         assert config.host == "localhost"
         assert config.port == 8080
         assert config.full_url == "http://localhost:8080"
-        
+
         # Test with custom values
         config2 = ConfigModel(host="example.com", port=9000)
         assert config2.full_url == "http://example.com:9000"
-        
+
         # Test invalid port
         with pytest.raises(ValueError, match="Port must be between 1 and 65535"):
             ConfigModel(port=70000)
 
     def test_validate_inputs_error_handling(self):
         """Test error handling in validate."""
-        
+
         class StrictValidationModel(Typed):
             username: str
             password: str
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
                 # Username validation
-                username = data.get('username', '')
+                username = data.get("username", "")
                 if username:
                     if len(username) < 3:
                         raise ValueError("Username must be at least 3 characters long")
                     if not username.isalnum():
                         raise ValueError("Username must be alphanumeric")
-                
+
                 # Password validation
-                password = data.get('password', '')
+                password = data.get("password", "")
                 if password:
                     if len(password) < 8:
                         raise ValueError("Password must be at least 8 characters long")
                     if not any(c.isdigit() for c in password):
                         raise ValueError("Password must contain at least one digit")
-        
+
         # Test valid inputs
         model = StrictValidationModel(username="user123", password="password1")
         assert model.username == "user123"
-        
+
         # Test username too short
         with pytest.raises(ValueError, match="Username must be at least 3 characters long"):
             StrictValidationModel(username="ab", password="password1")
-        
+
         # Test username not alphanumeric
         with pytest.raises(ValueError, match="Username must be alphanumeric"):
             StrictValidationModel(username="user@123", password="password1")
-        
+
         # Test password too short
         with pytest.raises(ValueError, match="Password must be at least 8 characters long"):
             StrictValidationModel(username="user123", password="short")
-        
+
         # Test password without digit
         with pytest.raises(ValueError, match="Password must contain at least one digit"):
             StrictValidationModel(username="user123", password="password")
 
     def test_validate_inputs_with_nested_types(self):
         """Test validate with nested Typed objects."""
-        
+
         class ContactInfo(Typed):
             email: str
             phone: Optional[str] = None
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
                 # Normalize email
-                if 'email' in data:
-                    data['email'] = data['email'].lower()
-                
+                if "email" in data:
+                    data["email"] = data["email"].lower()
+
                 # Format phone number
-                if 'phone' in data and data['phone']:
-                    phone = data['phone']
+                if "phone" in data and data["phone"]:
+                    phone = data["phone"]
                     # Remove non-digits
-                    digits = ''.join(filter(str.isdigit, phone))
+                    digits = "".join(filter(str.isdigit, phone))
                     if len(digits) == 10:
-                        data['phone'] = f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+                        data["phone"] = f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
                     elif len(digits) != 0:
                         raise ValueError(f"Phone number must have 10 digits, got {len(digits)}")
-        
+
         class PersonModel(Typed):
             name: str
             contact: ContactInfo
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
                 # Normalize name
-                if 'name' in data:
-                    data['name'] = data['name'].strip().title()
-        
+                if "name" in data:
+                    data["name"] = data["name"].strip().title()
+
         # Test with nested validation
         person = PersonModel(
-            name="  john doe  ",
-            contact={
-                "email": "JOHN@EXAMPLE.COM",
-                "phone": "1234567890"
-            }
+            name="  john doe  ", contact={"email": "JOHN@EXAMPLE.COM", "phone": "1234567890"}
         )
         assert person.name == "John Doe"
         assert person.contact.email == "john@example.com"
         assert person.contact.phone == "(123) 456-7890"
-        
+
         # Test nested validation error
         with pytest.raises(ValueError, match="Phone number must have 10 digits"):
-            PersonModel(
-                name="John",
-                contact={"email": "john@example.com", "phone": "123"}
-            )
+            PersonModel(name="John", contact={"email": "john@example.com", "phone": "123"})
 
     def test_validate_inputs_with_lists_and_dicts(self):
         """Test validate with complex data structures."""
-        
+
         class ProjectModel(Typed):
             name: str
             tags: List[str] = Field(default_factory=list)
             metadata: Dict[str, str] = Field(default_factory=dict)
             extra_field: Optional[str] = None
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
                 # Add computed field based on raw name first
-                if 'name' in data and 'extra_field' not in data:
-                    data['extra_field'] = f"Project: {data['name']}"
-                
+                if "name" in data and "extra_field" not in data:
+                    data["extra_field"] = f"Project: {data['name']}"
+
                 # Normalize project name
-                if 'name' in data:
-                    data['name'] = data['name'].strip().title()
-                
+                if "name" in data:
+                    data["name"] = data["name"].strip().title()
+
                 # Normalize tags to lowercase
-                if 'tags' in data and isinstance(data['tags'], list):
-                    data['tags'] = [tag.lower().strip() for tag in data['tags'] if tag.strip()]
-                
+                if "tags" in data and isinstance(data["tags"], list):
+                    data["tags"] = [tag.lower().strip() for tag in data["tags"] if tag.strip()]
+
                 # Handle metadata if provided
-                if 'metadata' in data and isinstance(data['metadata'], dict):
+                if "metadata" in data and isinstance(data["metadata"], dict):
                     # Add creation timestamp if not present
-                    if 'created_at' not in data['metadata']:
+                    if "created_at" not in data["metadata"]:
                         from datetime import datetime
-                        data['metadata']['created_at'] = datetime.now().isoformat()
-        
+
+                        data["metadata"]["created_at"] = datetime.now().isoformat()
+
         # Test with tags normalization
-        project = ProjectModel(
-            name="  my project  ",
-            tags=["  Python  ", "WEB", "  API  ", ""]
-        )
+        project = ProjectModel(name="  my project  ", tags=["  Python  ", "WEB", "  API  ", ""])
         assert project.name == "My Project"
         assert project.tags == ["python", "web", "api"]
         assert project.extra_field == "Project:   my project  "  # Raw value before normalization
         assert project.metadata == {}  # Default factory dict
-        
+
         # Test with existing metadata
-        project2 = ProjectModel(
-            name="another project",
-            metadata={"version": "1.0"}
-        )
+        project2 = ProjectModel(name="another project", metadata={"version": "1.0"})
         assert "created_at" in project2.metadata
         assert project2.metadata["version"] == "1.0"
-        
+
         # Test with metadata that already has created_at
-        project3 = ProjectModel(
-            name="third project",
-            metadata={"version": "1.0", "created_at": "2024-01-01"}
-        )
+        project3 = ProjectModel(name="third project", metadata={"version": "1.0", "created_at": "2024-01-01"})
         assert project3.metadata["created_at"] == "2024-01-01"  # Not overridden
 
     def test_validate_inputs_execution_order(self):
         """Test that validate is called at the right time in the validation process."""
-        
+
         class OrderTestModel(Typed):
             value: int
             transformed_value: Optional[int] = None
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
                 # This should be called before Pydantic field validation
                 # So we can work with raw input values
-                if 'value' in data:
+                if "value" in data:
                     # Transform string to int ourselves
-                    if isinstance(data['value'], str):
-                        data['value'] = int(data['value']) * 2
-                    
+                    if isinstance(data["value"], str):
+                        data["value"] = int(data["value"]) * 2
+
                     # Compute derived field
-                    data['transformed_value'] = data['value'] + 100
-        
+                    data["transformed_value"] = data["value"] + 100
+
         # Test with string input that gets transformed
         model = OrderTestModel(value="10")  # String "10" -> int 20 -> transformed 120
         assert model.value == 20
         assert model.transformed_value == 120
-        
+
         # Test with int input
         model2 = OrderTestModel(value=5)  # int 5 -> no string transformation -> transformed 105
         assert model2.value == 5
@@ -1764,57 +1742,57 @@ class TestValidateInputs:
 
     def test_validate_inputs_inheritance(self):
         """Test validate with class inheritance."""
-        
+
         class BaseModel(Typed):
             name: str
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
                 # Base validation - normalize name
-                if 'name' in data:
-                    data['name'] = data['name'].strip().title()
-        
+                if "name" in data:
+                    data["name"] = data["name"].strip().title()
+
         class ExtendedModel(BaseModel):
             email: str
             age: int
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
                 # Call parent validation first
                 super().validate(data)
-                
+
                 # Additional validation
-                if 'email' in data:
-                    data['email'] = data['email'].lower()
-                
-                if 'age' in data:
-                    age = int(data['age']) if isinstance(data['age'], str) else data['age']
+                if "email" in data:
+                    data["email"] = data["email"].lower()
+
+                if "age" in data:
+                    age = int(data["age"]) if isinstance(data["age"], str) else data["age"]
                     if age < 0:
                         raise ValueError("Age cannot be negative")
-        
+
         # Test that both base and extended validations are applied
         model = ExtendedModel(name="  john doe  ", email="JOHN@EXAMPLE.COM", age="30")
         assert model.name == "John Doe"  # Base validation
         assert model.email == "john@example.com"  # Extended validation
         assert model.age == 30
-        
+
         # Test extended validation error
         with pytest.raises(ValueError, match="Age cannot be negative"):
             ExtendedModel(name="John", email="john@example.com", age=-5)
 
     def test_validate_inputs_no_override(self):
         """Test that models work normally when validate is not overridden."""
-        
+
         class SimpleModel(Typed):
             name: str
             value: int
             # No validate override
-        
+
         # Should work normally without any custom validation
         model = SimpleModel(name="test", value=42)
         assert model.name == "test"
         assert model.value == 42
-        
+
         # Should still get Pydantic validation
         with pytest.raises(ValueError):  # Pydantic validation error wrapped by Typed
             SimpleModel(name="test", value="not_a_number")
@@ -1825,58 +1803,59 @@ class TestInitialize:
 
     def test_basic_initialize_override(self):
         """Test basic initialize method override with field initialization."""
-        
+
         class InitializingModel(Typed):
             name: str
             computed_field: Optional[str] = None
             timestamp: Optional[str] = None
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
                 # Set computed fields during validation phase
-                if 'name' in data:
-                    data['computed_field'] = f"Computed: {data['name'].upper()}"
+                if "name" in data:
+                    data["computed_field"] = f"Computed: {data['name'].upper()}"
                     from datetime import datetime
-                    data['timestamp'] = datetime.now().isoformat()
-            
+
+                    data["timestamp"] = datetime.now().isoformat()
+
             def initialize(self) -> NoReturn:
                 # Initialize method is called but can't modify frozen instance
                 # This is just for testing the method is called
                 pass
-        
+
         # Test that initialization happens after validation
         model = InitializingModel(name="test")
         assert model.name == "test"
         assert model.computed_field == "Computed: TEST"
         assert model.timestamp is not None
         assert isinstance(model.timestamp, str)
-    
+
     def test_initialize_with_model_validate(self):
         """Test that initialize works with model_validate."""
-        
+
         class InitializingModel(Typed):
             value: int
             doubled_value: Optional[int] = None
             formatted_value: Optional[str] = None
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
                 # Set derived fields during validation
-                if 'value' in data:
-                    value = int(data['value']) if isinstance(data['value'], str) else data['value']
-                    data['doubled_value'] = value * 2
-                    data['formatted_value'] = f"Value: {value}"
-            
+                if "value" in data:
+                    value = int(data["value"]) if isinstance(data["value"], str) else data["value"]
+                    data["doubled_value"] = value * 2
+                    data["formatted_value"] = f"Value: {value}"
+
             def initialize(self) -> NoReturn:
                 # Initialize method is called but can't modify frozen instance
                 pass
-        
+
         # Test with model_validate
         model = InitializingModel.model_validate({"value": 42})
         assert model.value == 42
         assert model.doubled_value == 84
         assert model.formatted_value == "Value: 42"
-        
+
         # Test with string conversion
         model2 = InitializingModel.model_validate({"value": "25"})
         assert model2.value == 25
@@ -1885,33 +1864,33 @@ class TestInitialize:
 
     def test_initialize_with_nested_objects(self):
         """Test initialize with nested Typed objects."""
-        
+
         class NestedInitializer(Typed):
             name: str
             full_name: Optional[str] = None
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
-                if 'name' in data:
-                    data['full_name'] = f"Mr./Ms. {data['name']}"
-            
+                if "name" in data:
+                    data["full_name"] = f"Mr./Ms. {data['name']}"
+
             def initialize(self) -> NoReturn:
                 pass
-        
+
         class ContainerModel(Typed):
             user: NestedInitializer
             container_info: Optional[str] = None
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
-                if 'user' in data and isinstance(data['user'], dict):
+                if "user" in data and isinstance(data["user"], dict):
                     # Create the nested object first
-                    nested = NestedInitializer(**data['user'])
-                    data['container_info'] = f"Container for {nested.full_name}"
-            
+                    nested = NestedInitializer(**data["user"])
+                    data["container_info"] = f"Container for {nested.full_name}"
+
             def initialize(self) -> NoReturn:
                 pass
-        
+
         # Test nested initialization
         model = ContainerModel(user={"name": "John"})
         assert model.user.name == "John"
@@ -1920,38 +1899,34 @@ class TestInitialize:
 
     def test_initialize_with_lists_and_dicts(self):
         """Test initialize with complex data structures."""
-        
+
         class ItemInitializer(Typed):
             name: str
             display_name: Optional[str] = None
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
-                if 'name' in data:
-                    data['display_name'] = f"Item: {data['name'].title()}"
-            
+                if "name" in data:
+                    data["display_name"] = f"Item: {data['name'].title()}"
+
             def initialize(self) -> NoReturn:
                 pass
-        
+
         class CollectionModel(Typed):
             items: List[ItemInitializer]
             summary: Optional[str] = None
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
-                if 'items' in data:
-                    data['summary'] = f"Collection with {len(data['items'])} items"
-            
+                if "items" in data:
+                    data["summary"] = f"Collection with {len(data['items'])} items"
+
             def initialize(self) -> NoReturn:
                 pass
-        
+
         # Test with list of items
-        model = CollectionModel(items=[
-            {"name": "apple"},
-            {"name": "banana"},
-            {"name": "cherry"}
-        ])
-        
+        model = CollectionModel(items=[{"name": "apple"}, {"name": "banana"}, {"name": "cherry"}])
+
         assert len(model.items) == 3
         assert model.items[0].display_name == "Item: Apple"
         assert model.items[1].display_name == "Item: Banana"
@@ -1960,31 +1935,31 @@ class TestInitialize:
 
     def test_initialize_with_conditional_logic(self):
         """Test initialize with conditional logic based on field values."""
-        
+
         class ConditionalInitializer(Typed):
             status: str
             priority: int = 1
             processing_time: Optional[int] = None
             error_message: Optional[str] = None
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
                 # Set processing time based on priority
-                if 'priority' in data:
-                    data['processing_time'] = data['priority'] * 100
-                
+                if "priority" in data:
+                    data["processing_time"] = data["priority"] * 100
+
                 # Set error message for invalid status
-                if 'status' in data and data['status'] not in ["active", "inactive", "pending"]:
-                    data['error_message'] = f"Invalid status: {data['status']}"
-            
+                if "status" in data and data["status"] not in ["active", "inactive", "pending"]:
+                    data["error_message"] = f"Invalid status: {data['status']}"
+
             def initialize(self) -> NoReturn:
                 pass
-        
+
         # Test with valid status
         model1 = ConditionalInitializer(status="active", priority=3)
         assert model1.processing_time == 300
         assert model1.error_message is None
-        
+
         # Test with invalid status
         model2 = ConditionalInitializer(status="invalid", priority=2)
         assert model2.processing_time == 200
@@ -1992,28 +1967,28 @@ class TestInitialize:
 
     def test_initialize_with_external_dependencies(self):
         """Test initialize with external dependencies and side effects."""
-        
+
         class ExternalDependencyModel(Typed):
             id: str
             cache_key: Optional[str] = None
             metadata: Optional[Dict[str, str]] = None
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
-                if 'id' in data:
+                if "id" in data:
                     # Simulate external dependency
-                    data['cache_key'] = f"cache_{data['id']}_{hash(data['id']) % 1000}"
-                    
+                    data["cache_key"] = f"cache_{data['id']}_{hash(data['id']) % 1000}"
+
                     # Initialize metadata
-                    data['metadata'] = {
+                    data["metadata"] = {
                         "created_at": "2024-01-01",
                         "version": "1.0",
-                        "id_hash": str(hash(data['id']))
+                        "id_hash": str(hash(data["id"])),
                     }
-            
+
             def initialize(self) -> NoReturn:
                 pass
-        
+
         model = ExternalDependencyModel(id="user123")
         assert model.cache_key.startswith("cache_user123_")
         assert model.metadata["created_at"] == "2024-01-01"
@@ -2022,32 +1997,32 @@ class TestInitialize:
 
     def test_initialize_with_error_handling(self):
         """Test initialize with error handling and validation."""
-        
+
         class ErrorHandlingModel(Typed):
             value: int
             processed_value: Optional[int] = None
             error: Optional[str] = None
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
-                if 'value' in data:
+                if "value" in data:
                     try:
                         # Simulate processing that might fail
-                        value = int(data['value'])
+                        value = int(data["value"])
                         if value < 0:
                             raise ValueError("Value cannot be negative")
-                        data['processed_value'] = value * 2
+                        data["processed_value"] = value * 2
                     except Exception as e:
-                        data['error'] = str(e)
-            
+                        data["error"] = str(e)
+
             def initialize(self) -> NoReturn:
                 pass
-        
+
         # Test successful initialization
         model1 = ErrorHandlingModel(value=10)
         assert model1.processed_value == 20
         assert model1.error is None
-        
+
         # Test initialization with error
         model2 = ErrorHandlingModel(value=-5)
         assert model2.processed_value is None
@@ -2055,77 +2030,78 @@ class TestInitialize:
 
     def test_initialize_execution_order(self):
         """Test that initialize is called after validation but before instance creation."""
-        
+
         class OrderTestModel(Typed):
             value: int
             validation_order: List[str] = Field(default_factory=list)
             initialization_order: List[str] = Field(default_factory=list)
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
                 # This should be called first
                 # Handle PydanticUndefined properly
                 from pydantic_core import PydanticUndefined
-                if 'validation_order' not in data or data['validation_order'] is PydanticUndefined:
-                    data['validation_order'] = []
-                data['validation_order'].append("validate_called")
-            
+
+                if "validation_order" not in data or data["validation_order"] is PydanticUndefined:
+                    data["validation_order"] = []
+                data["validation_order"].append("validate_called")
+
             def initialize(self) -> NoReturn:
                 # This should be called after validation but before instance is ready
                 # Note: Can't modify frozen instance, so we'll just verify the method is called
                 # The actual testing of execution order is done through the validation_order
                 pass
-        
+
         model = OrderTestModel(value=42)
-        
+
         # Check that validation happened first
         assert "validate_called" in model.validation_order
-        
+
         # The initialize method is called but can't modify the frozen instance
         # This test verifies that the method exists and is called without error
 
     def test_initialize_inheritance(self):
         """Test initialize with class inheritance."""
-        
+
         class BaseInitializer(Typed):
             name: str
             base_info: Optional[str] = None
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
-                if 'name' in data:
-                    data['base_info'] = f"Base: {data['name']}"
-            
+                if "name" in data:
+                    data["base_info"] = f"Base: {data['name']}"
+
             def initialize(self) -> NoReturn:
                 pass
-        
+
         class ExtendedInitializer(BaseInitializer):
             age: int
             extended_info: Optional[str] = None
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
                 # Call parent validation
                 super().validate(data)
                 # Add extended validation
-                if 'name' in data and 'age' in data:
-                    data['extended_info'] = f"Extended: {data['name']} is {data['age']} years old"
-            
+                if "name" in data and "age" in data:
+                    data["extended_info"] = f"Extended: {data['name']} is {data['age']} years old"
+
             def initialize(self) -> NoReturn:
                 pass
-        
+
         model = ExtendedInitializer(name="John", age=30)
         assert model.base_info == "Base: John"
         assert model.extended_info == "Extended: John is 30 years old"
 
     def test_initialize_no_override(self):
         """Test that models work normally when initialize is not overridden."""
-        
+
         class SimpleModel(Typed):
             name: str
             value: int
             # No initialize override
-        
+
         # Should work normally without any custom initialization
         model = SimpleModel(name="test", value=42)
         assert model.name == "test"
@@ -2133,51 +2109,51 @@ class TestInitialize:
 
     def test_initialize_vs_validate_differences(self):
         """Test the key differences between initialize and validate methods."""
-        
+
         class ComparisonModel(Typed):
             raw_value: str
             processed_value: Optional[str] = None
             computed_value: Optional[str] = None
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
                 # validate works on raw dict data before model creation
-                if 'raw_value' in data:
-                    data['raw_value'] = data['raw_value'].strip().lower()
+                if "raw_value" in data:
+                    data["raw_value"] = data["raw_value"].strip().lower()
                     # Can modify the input data
-                    data['processed_value'] = f"Processed: {data['raw_value']}"
+                    data["processed_value"] = f"Processed: {data['raw_value']}"
                     # Also set computed value during validation since we can't modify frozen instance
-                    data['computed_value'] = f"Computed: {data['raw_value'].upper()}"
-            
+                    data["computed_value"] = f"Computed: {data['raw_value'].upper()}"
+
             def initialize(self) -> NoReturn:
                 # initialize works on the model instance after validation
                 # Note: Can't modify frozen instance, so computation is done in validate
                 pass
-        
+
         model = ComparisonModel(raw_value="  HELLO  ")
-        
+
         # validate modified the input data
         assert model.raw_value == "hello"  # stripped and lowercased
         assert model.processed_value == "Processed: hello"
-        
+
         # computed value was set during validation
         assert model.computed_value == "Computed: HELLO"
 
     def test_initialize_with_factory_method(self):
         """Test initialize works with the of() factory method."""
-        
+
         class FactoryInitializer(Typed):
             name: str
             factory_info: Optional[str] = None
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
-                if 'name' in data:
-                    data['factory_info'] = f"Created via factory: {data['name']}"
-            
+                if "name" in data:
+                    data["factory_info"] = f"Created via factory: {data['name']}"
+
             def initialize(self) -> NoReturn:
                 pass
-        
+
         # Test with of() factory method
         model = FactoryInitializer.of(name="FactoryTest")
         assert model.name == "FactoryTest"
@@ -2185,64 +2161,54 @@ class TestInitialize:
 
     def test_initialize_with_complex_nested_structures(self):
         """Test initialize with deeply nested structures."""
-        
+
         class DeepNestedInitializer(Typed):
             level: int
             path: Optional[str] = None
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
-                if 'level' in data:
-                    data['path'] = f"Level_{data['level']}"
-            
+                if "level" in data:
+                    data["path"] = f"Level_{data['level']}"
+
             def initialize(self) -> NoReturn:
                 pass
-        
+
         class ContainerInitializer(Typed):
             items: List[DeepNestedInitializer]
             container_path: Optional[str] = None
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
-                if 'items' in data:
+                if "items" in data:
                     # Create items to get their paths
-                    items = [DeepNestedInitializer(**item) for item in data['items']]
+                    items = [DeepNestedInitializer(**item) for item in data["items"]]
                     paths = [item.path for item in items]
-                    data['container_path'] = f"Container[{', '.join(paths)}]"
-            
+                    data["container_path"] = f"Container[{', '.join(paths)}]"
+
             def initialize(self) -> NoReturn:
                 pass
-        
+
         class TopLevelInitializer(Typed):
             containers: List[ContainerInitializer]
             top_level_info: Optional[str] = None
-            
+
             @classmethod
             def validate(cls, data: Dict) -> NoReturn:
-                if 'containers' in data:
+                if "containers" in data:
                     # Create containers to get their paths
-                    containers = [ContainerInitializer(**container) for container in data['containers']]
+                    containers = [ContainerInitializer(**container) for container in data["containers"]]
                     container_paths = [container.container_path for container in containers]
-                    data['top_level_info'] = f"TopLevel[{', '.join(container_paths)}]"
-            
+                    data["top_level_info"] = f"TopLevel[{', '.join(container_paths)}]"
+
             def initialize(self) -> NoReturn:
                 pass
-        
+
         # Test deeply nested initialization
-        model = TopLevelInitializer(containers=[
-            {
-                "items": [
-                    {"level": 1},
-                    {"level": 2}
-                ]
-            },
-            {
-                "items": [
-                    {"level": 3}
-                ]
-            }
-        ])
-        
+        model = TopLevelInitializer(
+            containers=[{"items": [{"level": 1}, {"level": 2}]}, {"items": [{"level": 3}]}]
+        )
+
         assert model.containers[0].items[0].path == "Level_1"
         assert model.containers[0].items[1].path == "Level_2"
         assert model.containers[1].items[0].path == "Level_3"
@@ -2758,3 +2724,382 @@ class TestValidateCall:
         # The error occurs when the function is called without providing data
         with pytest.raises(ValidationError, match="Input should be a valid integer"):
             bad_complex_nested()
+
+
+class TestMutableTyped:
+    """Test MutableTyped functionality - mutable variant of Typed."""
+
+    def test_mutable_typed_basic_modification(self):
+        """Test that MutableTyped instances can be modified after creation."""
+
+        class User(MutableTyped):
+            name: str
+            age: int
+            active: bool = True
+
+        user = User(name="John", age=30)
+
+        # Should be able to modify fields
+        user.name = "Jane"
+        user.age = 25
+        user.active = False
+
+        assert user.name == "Jane"
+        assert user.age == 25
+        assert user.active is False
+
+    def test_mutable_typed_validation_on_assignment(self):
+        """Test that MutableTyped validates assignments."""
+
+        class User(MutableTyped):
+            name: str
+            age: int
+
+        user = User(name="John", age=30)
+
+        # Valid assignment should work
+        user.age = 25
+        assert user.age == 25
+
+        # Invalid assignment should raise ValidationError
+        with pytest.raises(ValidationError, match="Input should be a valid integer"):
+            user.age = "not_a_number"
+
+    def test_mutable_typed_with_optional_fields(self):
+        """Test MutableTyped with optional fields."""
+
+        class Profile(MutableTyped):
+            name: str
+            email: Optional[str] = None
+            age: Optional[int] = None
+
+        profile = Profile(name="John")
+
+        # Should be able to set optional fields
+        profile.email = "john@example.com"
+        profile.age = 30
+
+        assert profile.email == "john@example.com"
+        assert profile.age == 30
+
+        # Should be able to set to None
+        profile.email = None
+        assert profile.email is None
+
+    def test_mutable_typed_with_union_types(self):
+        """Test MutableTyped with Union types."""
+
+        class FlexibleValue(MutableTyped):
+            value: Union[int, str]
+            count: int = 0
+
+        item = FlexibleValue(value=42)
+
+        # Should be able to change to different union member
+        item.value = "hello"
+        assert item.value == "hello"
+
+        # Should be able to change back
+        item.value = 100
+        assert item.value == 100
+
+    def test_mutable_typed_with_nested_objects(self):
+        """Test MutableTyped with nested Typed objects."""
+
+        class Address(Typed):
+            street: str
+            city: str
+
+        class Person(MutableTyped):
+            name: str
+            address: Address
+
+        person = Person(name="John", address=Address(street="123 Main", city="NYC"))
+
+        # Should be able to replace nested object
+        new_address = Address(street="456 Oak", city="LA")
+        person.address = new_address
+
+        assert person.address.street == "456 Oak"
+        assert person.address.city == "LA"
+
+    def test_mutable_typed_with_lists(self):
+        """Test MutableTyped with list fields."""
+
+        class TaskList(MutableTyped):
+            name: str
+            tasks: List[str] = []
+
+        task_list = TaskList(name="Work")
+
+        # Should be able to modify list
+        task_list.tasks = ["task1", "task2"]
+        assert task_list.tasks == ["task1", "task2"]
+
+        # Should be able to replace list
+        task_list.tasks = ["new_task"]
+        assert task_list.tasks == ["new_task"]
+
+    def test_mutable_typed_with_dicts(self):
+        """Test MutableTyped with dictionary fields."""
+
+        class Config(MutableTyped):
+            name: str
+            settings: Dict[str, str] = {}
+
+        config = Config(name="app")
+
+        # Should be able to modify dict
+        config.settings = {"key1": "value1", "key2": "value2"}
+        assert config.settings["key1"] == "value1"
+
+        # Should be able to replace dict
+        config.settings = {"new_key": "new_value"}
+        assert config.settings["new_key"] == "new_value"
+
+    def test_mutable_typed_inheritance(self):
+        """Test that MutableTyped can be inherited."""
+
+        class BaseUser(MutableTyped):
+            name: str
+            age: int
+
+        class AdminUser(BaseUser):
+            permissions: List[str] = []
+
+        admin = AdminUser(name="Admin", age=30)
+
+        # Should be able to modify inherited fields
+        admin.name = "SuperAdmin"
+        admin.age = 35
+        admin.permissions = ["read", "write", "delete"]
+
+        assert admin.name == "SuperAdmin"
+        assert admin.age == 35
+        assert admin.permissions == ["read", "write", "delete"]
+
+
+class TestTypedFrozen:
+    """Test that regular Typed instances are frozen (immutable)."""
+
+    def test_typed_frozen_basic(self):
+        """Test that Typed instances cannot be modified."""
+
+        class User(Typed):
+            name: str
+            age: int
+            active: bool = True
+
+        user = User(name="John", age=30)
+
+        # Should not be able to modify fields
+        with pytest.raises(ValidationError, match="Instance is frozen"):
+            user.name = "Jane"
+
+        with pytest.raises(ValidationError, match="Instance is frozen"):
+            user.age = 25
+
+        with pytest.raises(ValidationError, match="Instance is frozen"):
+            user.active = False
+
+    def test_typed_frozen_with_optional_fields(self):
+        """Test that Typed instances with optional fields are still frozen."""
+
+        class Profile(Typed):
+            name: str
+            email: Optional[str] = None
+            age: Optional[int] = None
+
+        profile = Profile(name="John")
+
+        # Should not be able to modify optional fields
+        with pytest.raises(ValidationError, match="Instance is frozen"):
+            profile.email = "john@example.com"
+
+        with pytest.raises(ValidationError, match="Instance is frozen"):
+            profile.age = 30
+
+    def test_typed_frozen_with_union_types(self):
+        """Test that Typed instances with Union types are still frozen."""
+
+        class FlexibleValue(Typed):
+            value: Union[int, str]
+            count: int = 0
+
+        item = FlexibleValue(value=42)
+
+        # Should not be able to modify union field
+        with pytest.raises(ValidationError, match="Instance is frozen"):
+            item.value = "hello"
+
+    def test_typed_frozen_with_nested_objects(self):
+        """Test that Typed instances with nested objects are still frozen."""
+
+        class Address(Typed):
+            street: str
+            city: str
+
+        class Person(Typed):
+            name: str
+            address: Address
+
+        person = Person(name="John", address=Address(street="123 Main", city="NYC"))
+
+        # Should not be able to modify nested object
+        with pytest.raises(ValidationError, match="Instance is frozen"):
+            person.address = Address(street="456 Oak", city="LA")
+
+    def test_typed_frozen_with_lists(self):
+        """Test that Typed instances with list fields are still frozen."""
+
+        class TaskList(Typed):
+            name: str
+            tasks: List[str] = []
+
+        task_list = TaskList(name="Work")
+
+        # Should not be able to modify list field
+        with pytest.raises(ValidationError, match="Instance is frozen"):
+            task_list.tasks = ["task1", "task2"]
+
+    def test_typed_frozen_with_dicts(self):
+        """Test that Typed instances with dictionary fields are still frozen."""
+
+        class Config(Typed):
+            name: str
+            settings: Dict[str, str] = {}
+
+        config = Config(name="app")
+
+        # Should not be able to modify dict field
+        with pytest.raises(ValidationError, match="Instance is frozen"):
+            config.settings = {"key1": "value1"}
+
+
+class TestTypedVsMutableTyped:
+    """Test comparison between Typed and MutableTyped behavior."""
+
+    def test_creation_behavior_same(self):
+        """Test that both Typed and MutableTyped have same creation behavior."""
+
+        class FrozenUser(Typed):
+            name: str
+            age: int
+
+        class MutableUser(MutableTyped):
+            name: str
+            age: int
+
+        # Both should create instances the same way
+        frozen_user = FrozenUser(name="John", age=30)
+        mutable_user = MutableUser(name="John", age=30)
+
+        assert frozen_user.name == mutable_user.name
+        assert frozen_user.age == mutable_user.age
+
+    def test_modification_behavior_different(self):
+        """Test that Typed and MutableTyped have different modification behavior."""
+
+        class FrozenUser(Typed):
+            name: str
+            age: int
+
+        class MutableUser(MutableTyped):
+            name: str
+            age: int
+
+        frozen_user = FrozenUser(name="John", age=30)
+        mutable_user = MutableUser(name="John", age=30)
+
+        # Frozen user should not be modifiable
+        with pytest.raises(ValidationError, match="Instance is frozen"):
+            frozen_user.name = "Jane"
+
+        # Mutable user should be modifiable
+        mutable_user.name = "Jane"
+        assert mutable_user.name == "Jane"
+
+    def test_validation_behavior_same(self):
+        """Test that both Typed and MutableTyped have same validation behavior."""
+
+        class FrozenUser(Typed):
+            name: str
+            age: int
+
+        class MutableUser(MutableTyped):
+            name: str
+            age: int
+
+        # Both should validate creation the same way
+        # Typed wraps ValidationError in ValueError
+        with pytest.raises(ValueError, match="Input should be a valid integer"):
+            FrozenUser(name="John", age="not_a_number")
+
+        # MutableTyped also wraps ValidationError in ValueError
+        with pytest.raises(ValueError, match="Input should be a valid integer"):
+            MutableUser(name="John", age="not_a_number")
+
+    def test_assignment_validation_different(self):
+        """Test that assignment validation differs between Typed and MutableTyped."""
+
+        class FrozenUser(Typed):
+            name: str
+            age: int
+
+        class MutableUser(MutableTyped):
+            name: str
+            age: int
+
+        frozen_user = FrozenUser(name="John", age=30)
+        mutable_user = MutableUser(name="John", age=30)
+
+        # Frozen user should reject assignment due to frozen constraint
+        with pytest.raises(ValidationError, match="Instance is frozen"):
+            frozen_user.age = "not_a_number"
+
+        # Mutable user should reject assignment due to type validation
+        with pytest.raises(ValidationError, match="Input should be a valid integer"):
+            mutable_user.age = "not_a_number"
+
+    def test_model_validate_behavior_same(self):
+        """Test that model_validate works the same for both classes."""
+
+        class FrozenUser(Typed):
+            name: str
+            age: int
+
+        class MutableUser(MutableTyped):
+            name: str
+            age: int
+
+        data = {"name": "John", "age": "30"}  # String that converts to int
+
+        # Both should convert and validate the same way
+        frozen_user = FrozenUser.model_validate(data)
+        mutable_user = MutableUser.model_validate(data)
+
+        assert frozen_user.name == mutable_user.name
+        assert frozen_user.age == mutable_user.age
+        assert isinstance(frozen_user.age, int)
+        assert isinstance(mutable_user.age, int)
+
+    def test_dict_conversion_same(self):
+        """Test that dict conversion works the same for both classes."""
+
+        class FrozenUser(Typed):
+            name: str
+            age: int
+
+        class MutableUser(MutableTyped):
+            name: str
+            age: int
+
+        frozen_user = FrozenUser(name="John", age=30)
+        mutable_user = MutableUser(name="John", age=30)
+
+        # Both should convert to dict the same way
+        frozen_dict = frozen_user.model_dump()
+        mutable_dict = mutable_user.model_dump()
+
+        assert frozen_dict == mutable_dict
+        assert frozen_dict == {"name": "John", "age": 30}

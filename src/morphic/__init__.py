@@ -50,7 +50,7 @@ from .structs import (
     set_intersection,
     set_union,
 )
-from .typed import Typed, ValidationError, validate
+from .typed import MutableTyped, Typed, ValidationError, validate
 
 __all__ = [
     # Core classes
@@ -59,6 +59,7 @@ __all__ = [
     "alias",
     "auto",
     "Typed",
+    "MutableTyped",
     "validate",
     "ValidationError",
     # Import utilities
