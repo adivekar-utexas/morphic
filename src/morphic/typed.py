@@ -751,11 +751,11 @@ class Typed(BaseModel, ABC):
     @classmethod
     def _validate_inputs(cls, data: Dict) -> Dict:
         cls._set_default_param_values(data)
-        cls.validate_inputs(data)
+        cls.validate(data)
         return data
 
     @classmethod
-    def validate_inputs(cls, data: Dict) -> NoReturn:
+    def validate(cls, data: Dict) -> NoReturn:
         """
         Hook method for custom input validation and mutation before Pydantic model creation.
 
@@ -773,7 +773,7 @@ class Typed(BaseModel, ABC):
 
         Execution Order:
             1. `_set_default_param_values()` - Apply default values for missing fields
-            2. `validate_inputs()` - Custom validation and mutation (this method)
+            2. `validate()` - Custom validation and mutation (this method)
             3. Pydantic field validation - Type conversion and constraint validation
             4. Pydantic model validators - Any `@model_validator(mode="after")` methods
 
@@ -800,7 +800,7 @@ class Typed(BaseModel, ABC):
                     age: int
 
                     @classmethod
-                    def validate_inputs(cls, data: Dict) -> NoReturn:
+                    def validate(cls, data: Dict) -> NoReturn:
                         # Normalize email to lowercase
                         if 'email' in data:
                             data['email'] = data['email'].lower()
@@ -831,7 +831,7 @@ class Typed(BaseModel, ABC):
                     total_price: Optional[float] = None  # Will be computed
 
                     @classmethod
-                    def validate_inputs(cls, data: Dict) -> NoReturn:
+                    def validate(cls, data: Dict) -> NoReturn:
                         # Compute total price if not provided
                         if 'total_price' not in data and 'price' in data:
                             price = float(data['price'])
@@ -856,7 +856,7 @@ class Typed(BaseModel, ABC):
                     duration_days: Optional[int] = None
 
                     @classmethod
-                    def validate_inputs(cls, data: Dict) -> NoReturn:
+                    def validate(cls, data: Dict) -> NoReturn:
                         from datetime import datetime
                         
                         # Parse and validate dates
@@ -892,7 +892,7 @@ class Typed(BaseModel, ABC):
                     body: Optional[str] = None
 
                     @classmethod
-                    def validate_inputs(cls, data: Dict) -> NoReturn:
+                    def validate(cls, data: Dict) -> NoReturn:
                         # Normalize HTTP method
                         if 'method' in data:
                             data['method'] = data['method'].upper()
@@ -932,7 +932,7 @@ class Typed(BaseModel, ABC):
                     role: str = "user"
 
                     @classmethod
-                    def validate_inputs(cls, data: Dict) -> NoReturn:
+                    def validate(cls, data: Dict) -> NoReturn:
                         # Validate username format
                         username = data.get('username', '')
                         if username and not username.isalnum():
@@ -966,7 +966,7 @@ class Typed(BaseModel, ABC):
                 priority: int = 1
 
                 @classmethod
-                def validate_inputs(cls, data: Dict) -> NoReturn:
+                def validate(cls, data: Dict) -> NoReturn:
                     # Normalize title
                     if 'title' in data:
                         data['title'] = data['title'].strip()

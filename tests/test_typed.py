@@ -1406,17 +1406,17 @@ class TestNestedTypedConversion:
 
 
 class TestValidateInputs:
-    """Comprehensive tests for validate_inputs method."""
+    """Comprehensive tests for validate method."""
 
     def test_basic_validate_inputs_override(self):
-        """Test basic validate_inputs method override with data mutation."""
+        """Test basic validate method override with data mutation."""
         
         class NormalizingModel(Typed):
             name: str
             email: str
             
             @classmethod
-            def validate_inputs(cls, data: Dict) -> NoReturn:
+            def validate(cls, data: Dict) -> NoReturn:
                 # Normalize name to title case
                 if 'name' in data:
                     data['name'] = data['name'].strip().title()
@@ -1431,14 +1431,14 @@ class TestValidateInputs:
         assert model.email == "john@example.com"
     
     def test_validate_inputs_with_model_validate(self):
-        """Test that validate_inputs works with model_validate."""
+        """Test that validate works with model_validate."""
         
         class ValidatingModel(Typed):
             username: str
             age: int
             
             @classmethod
-            def validate_inputs(cls, data: Dict) -> NoReturn:
+            def validate(cls, data: Dict) -> NoReturn:
                 # Normalize username
                 if 'username' in data:
                     data['username'] = data['username'].lower()
@@ -1462,7 +1462,7 @@ class TestValidateInputs:
             ValidatingModel.model_validate({"username": "test", "age": 150})
 
     def test_validate_inputs_computed_fields(self):
-        """Test validate_inputs for computing derived fields."""
+        """Test validate for computing derived fields."""
         
         class ProductModel(Typed):
             name: str
@@ -1471,7 +1471,7 @@ class TestValidateInputs:
             total_price: Optional[float] = None
             
             @classmethod
-            def validate_inputs(cls, data: Dict) -> NoReturn:
+            def validate(cls, data: Dict) -> NoReturn:
                 # Compute total price if not provided
                 if 'total_price' not in data and 'price' in data:
                     price = float(data['price'])
@@ -1496,7 +1496,7 @@ class TestValidateInputs:
         assert product3.total_price == 125  # Not computed
 
     def test_validate_inputs_conditional_logic(self):
-        """Test validate_inputs with conditional logic based on field values."""
+        """Test validate with conditional logic based on field values."""
         
         class APIRequestModel(Typed):
             method: str
@@ -1505,7 +1505,7 @@ class TestValidateInputs:
             body: Optional[str] = None
             
             @classmethod
-            def validate_inputs(cls, data: Dict) -> NoReturn:
+            def validate(cls, data: Dict) -> NoReturn:
                 # Normalize HTTP method
                 if 'method' in data:
                     data['method'] = data['method'].upper()
@@ -1545,7 +1545,7 @@ class TestValidateInputs:
             APIRequestModel(method="GET", url="ftp://invalid.com")
 
     def test_validate_inputs_with_defaults(self):
-        """Test validate_inputs interaction with default values."""
+        """Test validate interaction with default values."""
         
         class ConfigModel(Typed):
             host: str = "localhost"
@@ -1554,7 +1554,7 @@ class TestValidateInputs:
             full_url: Optional[str] = None
             
             @classmethod
-            def validate_inputs(cls, data: Dict) -> NoReturn:
+            def validate(cls, data: Dict) -> NoReturn:
                 # Compute full URL if not provided
                 if 'full_url' not in data:
                     host = data.get('host', 'localhost')
@@ -1582,14 +1582,14 @@ class TestValidateInputs:
             ConfigModel(port=70000)
 
     def test_validate_inputs_error_handling(self):
-        """Test error handling in validate_inputs."""
+        """Test error handling in validate."""
         
         class StrictValidationModel(Typed):
             username: str
             password: str
             
             @classmethod
-            def validate_inputs(cls, data: Dict) -> NoReturn:
+            def validate(cls, data: Dict) -> NoReturn:
                 # Username validation
                 username = data.get('username', '')
                 if username:
@@ -1627,14 +1627,14 @@ class TestValidateInputs:
             StrictValidationModel(username="user123", password="password")
 
     def test_validate_inputs_with_nested_types(self):
-        """Test validate_inputs with nested Typed objects."""
+        """Test validate with nested Typed objects."""
         
         class ContactInfo(Typed):
             email: str
             phone: Optional[str] = None
             
             @classmethod
-            def validate_inputs(cls, data: Dict) -> NoReturn:
+            def validate(cls, data: Dict) -> NoReturn:
                 # Normalize email
                 if 'email' in data:
                     data['email'] = data['email'].lower()
@@ -1654,7 +1654,7 @@ class TestValidateInputs:
             contact: ContactInfo
             
             @classmethod
-            def validate_inputs(cls, data: Dict) -> NoReturn:
+            def validate(cls, data: Dict) -> NoReturn:
                 # Normalize name
                 if 'name' in data:
                     data['name'] = data['name'].strip().title()
@@ -1679,7 +1679,7 @@ class TestValidateInputs:
             )
 
     def test_validate_inputs_with_lists_and_dicts(self):
-        """Test validate_inputs with complex data structures."""
+        """Test validate with complex data structures."""
         
         class ProjectModel(Typed):
             name: str
@@ -1688,7 +1688,7 @@ class TestValidateInputs:
             extra_field: Optional[str] = None
             
             @classmethod
-            def validate_inputs(cls, data: Dict) -> NoReturn:
+            def validate(cls, data: Dict) -> NoReturn:
                 # Add computed field based on raw name first
                 if 'name' in data and 'extra_field' not in data:
                     data['extra_field'] = f"Project: {data['name']}"
@@ -1734,14 +1734,14 @@ class TestValidateInputs:
         assert project3.metadata["created_at"] == "2024-01-01"  # Not overridden
 
     def test_validate_inputs_execution_order(self):
-        """Test that validate_inputs is called at the right time in the validation process."""
+        """Test that validate is called at the right time in the validation process."""
         
         class OrderTestModel(Typed):
             value: int
             transformed_value: Optional[int] = None
             
             @classmethod
-            def validate_inputs(cls, data: Dict) -> NoReturn:
+            def validate(cls, data: Dict) -> NoReturn:
                 # This should be called before Pydantic field validation
                 # So we can work with raw input values
                 if 'value' in data:
@@ -1763,13 +1763,13 @@ class TestValidateInputs:
         assert model2.transformed_value == 105
 
     def test_validate_inputs_inheritance(self):
-        """Test validate_inputs with class inheritance."""
+        """Test validate with class inheritance."""
         
         class BaseModel(Typed):
             name: str
             
             @classmethod
-            def validate_inputs(cls, data: Dict) -> NoReturn:
+            def validate(cls, data: Dict) -> NoReturn:
                 # Base validation - normalize name
                 if 'name' in data:
                     data['name'] = data['name'].strip().title()
@@ -1779,9 +1779,9 @@ class TestValidateInputs:
             age: int
             
             @classmethod
-            def validate_inputs(cls, data: Dict) -> NoReturn:
+            def validate(cls, data: Dict) -> NoReturn:
                 # Call parent validation first
-                super().validate_inputs(data)
+                super().validate(data)
                 
                 # Additional validation
                 if 'email' in data:
@@ -1803,12 +1803,12 @@ class TestValidateInputs:
             ExtendedModel(name="John", email="john@example.com", age=-5)
 
     def test_validate_inputs_no_override(self):
-        """Test that models work normally when validate_inputs is not overridden."""
+        """Test that models work normally when validate is not overridden."""
         
         class SimpleModel(Typed):
             name: str
             value: int
-            # No validate_inputs override
+            # No validate override
         
         # Should work normally without any custom validation
         model = SimpleModel(name="test", value=42)
