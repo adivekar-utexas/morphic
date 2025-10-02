@@ -173,6 +173,7 @@ class Typed(BaseModel, ABC):
         - **Serialization**: JSON and dict serialization with customizable options
         - **Class Properties**: Convenient access to model metadata and field information
         - **Registry Integration**: Compatible with morphic.Registry for factory patterns
+        - **Post-Validation Initialization**: Hook for setting up computed fields and derived attributes
 
     Configuration:
         The class uses a pre-configured Pydantic ConfigDict with the following settings:
@@ -236,29 +237,162 @@ class Typed(BaseModel, ABC):
         schema = Product.model_json_schema()
         ```
 
-    Integration with AutoEnum:
-        ```python
-        from morphic.autoenum import AutoEnum, auto
-        from morphic.typed import Typed
+        Integration with AutoEnum:
+            ```python
+            from morphic.autoenum import AutoEnum, auto
+            from morphic.typed import Typed
 
-        class Status(AutoEnum):
-            ACTIVE = auto()
-            INACTIVE = auto()
-            PENDING = auto()
+            class Status(AutoEnum):
+                ACTIVE = auto()
+                INACTIVE = auto()
+                PENDING = auto()
 
-        class Task(Typed):
-            title: str
-            status: Status = Status.PENDING
+            class Task(Typed):
+                title: str
+                status: Status = Status.PENDING
 
-        # AutoEnum fields work seamlessly
-        task = Task(title="Review PR", status="ACTIVE")  # String converted to enum
-        assert task.status == Status.ACTIVE
-        ```
+            # AutoEnum fields work seamlessly
+            task = Task(title="Review PR", status="ACTIVE")  # String converted to enum
+            assert task.status == Status.ACTIVE
+            ```
 
-    See Also:
-        - `morphic.registry.Registry`: For factory pattern and class registration
-        - `morphic.autoenum.AutoEnum`: For fuzzy-matching enumerations
-        - `pydantic.BaseModel`: The underlying Pydantic base class
+        Post-Validation Initialization:
+            ```python
+            from morphic.typed import Typed
+            from typing import Optional
+            from datetime import datetime
+
+            class User(Typed):
+                name: str
+                email: str
+                computed_fields: Optional[dict] = None
+                created_at: Optional[str] = None
+
+                @classmethod
+                def validate(cls, data: dict) -> None:
+                    # Set computed fields during validation phase
+                    if 'name' in data and 'email' in data:
+                        data['computed_fields'] = {
+                            "display_name": data['name'].title(),
+                            "email_domain": data['email'].split("@")[1]
+                        }
+                        data['created_at'] = datetime.now().isoformat()
+
+                def initialize(self) -> None:
+                    # Called after validation, but can't modify frozen instance
+                    # Use for side effects, logging, or external system integration
+                    pass
+
+            # Initialize is called automatically after validation
+            user = User(name="john doe", email="john@example.com")
+            assert user.computed_fields["display_name"] == "John Doe"
+            assert user.computed_fields["email_domain"] == "example.com"
+            assert user.created_at is not None
+            ```
+
+        Validation vs Initialization:
+            ```python
+            class ProcessingModel(Typed):
+                raw_data: str
+                processed_data: Optional[str] = None
+                computed_result: Optional[str] = None
+
+                @classmethod
+                def validate(cls, data: dict) -> None:
+                    # Called BEFORE model creation, works on raw input data
+                    if 'raw_data' in data:
+                        data['raw_data'] = data['raw_data'].strip().lower()
+                        data['processed_data'] = f"Processed: {data['raw_data']}"
+                        # Set computed result during validation since instance is frozen
+                        data['computed_result'] = f"Result: {data['raw_data'].upper()}"
+
+                def initialize(self) -> None:
+                    # Called AFTER validation, but can't modify frozen instance
+                    # Use for side effects, logging, or external system integration
+                    pass
+
+            model = ProcessingModel(raw_data="  HELLO  ")
+            assert model.raw_data == "hello"  # From validate
+            assert model.processed_data == "Processed: hello"  # From validate
+            assert model.computed_result == "Result: HELLO"  # From validate
+            ```
+
+        Real-World Example - User Profile:
+            ```python
+            from datetime import datetime
+            from typing import Optional, List
+
+            class UserProfile(Typed):
+                username: str
+                email: str
+                birth_year: int
+
+                # Fields that will be computed during validation
+                display_name: Optional[str] = None
+                age: Optional[int] = None
+                email_domain: Optional[str] = None
+                profile_summary: Optional[str] = None
+                created_at: Optional[str] = None
+
+                @classmethod
+                def validate(cls, data: dict) -> None:
+                    # Input validation and normalization (before model creation)
+                    if 'username' in data:
+                        data['username'] = data['username'].strip().lower()
+
+                    if 'email' in data:
+                        data['email'] = data['email'].strip().lower()
+
+                    # Validate birth year
+                    if 'birth_year' in data:
+                        current_year = datetime.now().year
+                        if data['birth_year'] < 1900 or data['birth_year'] > current_year:
+                            raise ValueError(f"Invalid birth year: {data['birth_year']}")
+
+                    # Compute derived fields during validation
+                    if 'username' in data:
+                        data['display_name'] = data['username'].title()
+
+                    if 'birth_year' in data:
+                        data['age'] = datetime.now().year - data['birth_year']
+
+                    if 'email' in data:
+                        data['email_domain'] = data['email'].split('@')[1]
+
+                    # Create profile summary
+                    if all(key in data for key in ['display_name', 'age', 'email_domain']):
+                        data['profile_summary'] = f"{data['display_name']} ({data['age']} years old) - {data['email_domain']}"
+
+                    # Set creation timestamp
+                    data['created_at'] = datetime.now().isoformat()
+
+                def initialize(self) -> None:
+                    # Post-validation initialization (after model creation)
+                    # Can't modify frozen instance, but can perform side effects
+                    # e.g., logging, external system integration, etc.
+                    pass
+
+            # Usage
+            profile = UserProfile(
+                username="  john_doe  ",
+                email="  JOHN@EXAMPLE.COM  ",
+                birth_year=1990
+            )
+
+            # Results from validate() - input normalization and computed fields
+            assert profile.username == "john_doe"  # stripped and lowercased
+            assert profile.email == "john@example.com"  # stripped and lowercased
+            assert profile.display_name == "John_Doe"  # title case
+            assert profile.age == datetime.now().year - 1990  # calculated age
+            assert profile.email_domain == "example.com"  # extracted domain
+            assert profile.profile_summary == "John_Doe (34 years old) - example.com"
+            assert profile.created_at is not None  # timestamp set
+            ```
+
+        See Also:
+            - `morphic.registry.Registry`: For factory pattern and class registration
+            - `morphic.autoenum.AutoEnum`: For fuzzy-matching enumerations
+            - `pydantic.BaseModel`: The underlying Pydantic base class
     """
 
     ## Registry integration support
@@ -760,7 +894,7 @@ class Typed(BaseModel, ABC):
         Hook method for custom input validation and mutation before Pydantic model creation.
 
         This method is called during the Pydantic validation process (via `@model_validator(mode="before")`)
-        and allows subclasses to perform custom validation and mutation of input data before the 
+        and allows subclasses to perform custom validation and mutation of input data before the
         Pydantic model is instantiated. Since it's called before model creation, the data dictionary
         can be freely modified, and these changes will be reflected in the final model instance.
 
@@ -804,7 +938,7 @@ class Typed(BaseModel, ABC):
                         # Normalize email to lowercase
                         if 'email' in data:
                             data['email'] = data['email'].lower()
-                        
+
                         # Validate age range
                         if 'age' in data and isinstance(data['age'], (int, str)):
                             age = int(data['age']) if isinstance(data['age'], str) else data['age']
@@ -837,7 +971,7 @@ class Typed(BaseModel, ABC):
                             price = float(data['price'])
                             tax_rate = float(data.get('tax_rate', 0.1))
                             data['total_price'] = price * (1 + tax_rate)
-                        
+
                         # Normalize product name
                         if 'name' in data:
                             data['name'] = data['name'].strip().title()
@@ -858,7 +992,7 @@ class Typed(BaseModel, ABC):
                     @classmethod
                     def validate(cls, data: Dict) -> NoReturn:
                         from datetime import datetime
-                        
+
                         # Parse and validate dates
                         if 'start_date' in data and 'end_date' in data:
                             try:
@@ -866,11 +1000,11 @@ class Typed(BaseModel, ABC):
                                 end = datetime.fromisoformat(data['end_date'])
                             except ValueError as e:
                                 raise ValueError(f"Invalid date format: {e}")
-                            
+
                             # Validate date order
                             if start >= end:
                                 raise ValueError("start_date must be before end_date")
-                            
+
                             # Compute duration if not provided
                             if 'duration_days' not in data:
                                 data['duration_days'] = (end - start).days
@@ -896,18 +1030,18 @@ class Typed(BaseModel, ABC):
                         # Normalize HTTP method
                         if 'method' in data:
                             data['method'] = data['method'].upper()
-                        
+
                         # Add default headers if not provided
                         if 'headers' not in data:
                             data['headers'] = {}
-                        
+
                         # For POST/PUT requests, ensure Content-Type is set
                         method = data.get('method', '').upper()
                         if method in ['POST', 'PUT', 'PATCH'] and 'body' in data:
                             headers = data['headers']
                             if 'Content-Type' not in headers:
                                 headers['Content-Type'] = 'application/json'
-                        
+
                         # Validate URL format
                         url = data.get('url', '')
                         if url and not (url.startswith('http://') or url.startswith('https://')):
@@ -937,12 +1071,12 @@ class Typed(BaseModel, ABC):
                         username = data.get('username', '')
                         if username and not username.isalnum():
                             raise ValueError("Username must be alphanumeric")
-                        
+
                         # Validate email format (basic check)
                         email = data.get('email', '')
                         if email and '@' not in email:
                             raise ValueError("Invalid email format")
-                        
+
                         # Validate role against allowed values
                         role = data.get('role', 'user')
                         allowed_roles = ['user', 'admin', 'moderator']
@@ -972,12 +1106,12 @@ class Typed(BaseModel, ABC):
                         data['title'] = data['title'].strip()
                         if not data['title']:
                             raise ValueError("Title cannot be empty")
-                    
+
                     # Clamp priority to valid range
                     if 'priority' in data:
                         priority = int(data['priority'])
                         data['priority'] = max(1, min(10, priority))  # Clamp to 1-10
-                    
+
                     # Auto-assign status based on priority
                     if 'status' not in data:
                         priority = int(data.get('priority', 1))
@@ -1014,6 +1148,318 @@ class Typed(BaseModel, ABC):
         See Also:
             - `_set_default_param_values()`: Applies default values before validation
             - `@model_validator(mode="after")`: Pydantic post-creation validation
+            - `@field_validator`: Field-level validation for specific fields
+            - `model_validate()`: Entry point for dictionary-to-model conversion
+        """
+        pass
+
+    @model_validator(mode="after")
+    def _initialize_members(self) -> T:
+        self.initialize()
+        return self
+
+    def initialize(self) -> NoReturn:
+        """
+        Hook method for post-validation initialization of model fields and derived attributes.
+
+        This method is called automatically after Pydantic validation is complete and before
+        the model instance is fully created. It provides a hook for setting up computed fields,
+        derived attributes, and performing any initialization logic that requires access to
+        validated field values.
+
+        Key Features:
+            - **Post-Validation Hook**: Called after all field validation and type conversion
+            - **Instance Access**: Can access validated field values (read-only)
+            - **Side Effects**: Perfect for logging, external system integration, or other side effects
+            - **Error Handling**: Can handle initialization errors gracefully
+            - **Frozen Instance**: Cannot modify instance attributes (instance is frozen)
+
+        Execution Order:
+            1. `_set_default_param_values()` - Apply default values for missing fields
+            2. `validate()` - Custom validation and mutation of input data
+            3. Pydantic field validation - Type conversion and constraint validation
+            4. `initialize()` - Post-validation initialization (this method)
+            5. Model instance creation - Instance becomes available
+
+        Differences from `validate()`:
+            - **Timing**: `validate()` runs before model creation, `initialize()` runs after validation
+            - **Data Access**: `validate()` works on raw input dict, `initialize()` works on model instance
+            - **Purpose**: `validate()` for input transformation and computed fields, `initialize()` for side effects
+            - **Scope**: `validate()` can modify input data, `initialize()` cannot modify frozen instance
+
+        Args:
+            None: This method takes no parameters. Access validated fields via `self`.
+
+        Returns:
+            NoReturn: This method should not return anything. Since the instance is frozen,
+                this method is primarily for side effects rather than modifying attributes.
+
+        Raises:
+            Any exception: Exceptions raised during initialization will be caught and wrapped
+                by Typed's error handling system, similar to validation errors.
+
+        Examples:
+            Side Effects and Logging:
+                ```python
+                class User(Typed):
+                    name: str
+                    email: str
+                    display_name: Optional[str] = None
+                    email_domain: Optional[str] = None
+
+                    @classmethod
+                    def validate(cls, data: dict) -> None:
+                        # Set computed fields during validation
+                        if 'name' in data:
+                            data['display_name'] = data['name'].title()
+                        if 'email' in data:
+                            data['email_domain'] = data['email'].split("@")[1]
+
+                    def initialize(self) -> None:
+                        # Perform side effects after validation
+                        print(f"User created: {self.display_name} ({self.email_domain})")
+                        # Could also integrate with external systems, logging, etc.
+
+                user = User(name="john doe", email="john@example.com")
+                assert user.display_name == "John Doe"
+                assert user.email_domain == "example.com"
+                ```
+
+            External System Integration:
+                ```python
+                from datetime import datetime
+
+                class Product(Typed):
+                    name: str
+                    price: float
+                    total_with_tax: Optional[float] = None
+                    metadata: Optional[dict] = None
+
+                    @classmethod
+                    def validate(cls, data: dict) -> None:
+                        # Compute derived values during validation
+                        if 'price' in data:
+                            data['total_with_tax'] = data['price'] * 1.1
+                            data['metadata'] = {
+                                "created_at": datetime.now().isoformat(),
+                                "price_category": "expensive" if data['price'] > 100 else "affordable"
+                            }
+
+                    def initialize(self) -> None:
+                        # Integrate with external systems after validation
+                        # e.g., send to analytics, update cache, etc.
+                        print(f"Product {self.name} registered in system")
+
+                product = Product(name="Laptop", price=999.99)
+                assert product.total_with_tax == 1099.989
+                assert product.metadata["price_category"] == "expensive"
+                ```
+
+            Conditional Side Effects:
+                ```python
+                class Task(Typed):
+                    title: str
+                    priority: int = 1
+                    processing_time: Optional[int] = None
+                    error_message: Optional[str] = None
+
+                    @classmethod
+                    def validate(cls, data: dict) -> None:
+                        # Set processing time and validate during validation
+                        if 'priority' in data:
+                            data['processing_time'] = data['priority'] * 100
+                            if data['priority'] > 10:
+                                data['error_message'] = "Priority too high"
+
+                    def initialize(self) -> None:
+                        # Perform conditional side effects
+                        if self.priority > 5:
+                            print(f"High priority task created: {self.title}")
+                        if self.error_message:
+                            print(f"Warning: {self.error_message}")
+
+                task = Task(title="Important Task", priority=5)
+                assert task.processing_time == 500
+                assert task.error_message is None
+                ```
+
+            External Dependencies:
+                ```python
+                class CacheableModel(Typed):
+                    id: str
+                    data: str
+                    cache_key: Optional[str] = None
+                    hash_value: Optional[int] = None
+
+                    @classmethod
+                    def validate(cls, data: dict) -> None:
+                        # Generate cache key during validation
+                        if 'id' in data and 'data' in data:
+                            data['cache_key'] = f"cache_{data['id']}_{hash(data['data'])}"
+                            data['hash_value'] = hash(data['data'])
+
+                    def initialize(self) -> None:
+                        # Interact with external systems after validation
+                        # e.g., register with cache service, send to analytics, etc.
+                        print(f"Model {self.id} registered with cache service")
+
+                model = CacheableModel(id="user123", data="important data")
+                assert model.cache_key.startswith("cache_user123_")
+                assert model.hash_value is not None
+                ```
+
+            Error Handling:
+                ```python
+                class RobustModel(Typed):
+                    value: int
+                    processed_value: Optional[int] = None
+                    error: Optional[str] = None
+
+                    @classmethod
+                    def validate(cls, data: dict) -> None:
+                        # Handle processing during validation
+                        if 'value' in data:
+                            try:
+                                if data['value'] < 0:
+                                    raise ValueError("Value cannot be negative")
+                                data['processed_value'] = data['value'] * 2
+                            except Exception as e:
+                                data['error'] = str(e)
+
+                    def initialize(self) -> None:
+                        # Handle side effects after validation
+                        if self.error:
+                            print(f"Error during processing: {self.error}")
+                        else:
+                            print(f"Successfully processed value: {self.processed_value}")
+
+                # Successful initialization
+                model1 = RobustModel(value=10)
+                assert model1.processed_value == 20
+                assert model1.error is None
+
+                # Initialization with error
+                model2 = RobustModel(value=-5)
+                assert model2.processed_value is None
+                assert model2.error == "Value cannot be negative"
+                ```
+
+            Nested Object Side Effects:
+                ```python
+                class Address(Typed):
+                    street: str
+                    city: str
+                    full_address: Optional[str] = None
+
+                    @classmethod
+                    def validate(cls, data: dict) -> None:
+                        if 'street' in data and 'city' in data:
+                            data['full_address'] = f"{data['street']}, {data['city']}"
+
+                    def initialize(self) -> None:
+                        print(f"Address created: {self.full_address}")
+
+                class Person(Typed):
+                    name: str
+                    address: Address
+                    contact_info: Optional[str] = None
+
+                    @classmethod
+                    def validate(cls, data: dict) -> None:
+                        if 'name' in data and 'address' in data:
+                            # Create address to get full_address
+                            address = Address(**data['address'])
+                            data['contact_info'] = f"{data['name']} at {address.full_address}"
+
+                    def initialize(self) -> None:
+                        print(f"Person created: {self.contact_info}")
+
+                person = Person(
+                    name="John Doe",
+                    address={"street": "123 Main St", "city": "Anytown"}
+                )
+                assert person.address.full_address == "123 Main St, Anytown"
+                assert person.contact_info == "John Doe at 123 Main St, Anytown"
+                ```
+
+        Advanced Patterns:
+            Inheritance and Super Calls:
+                ```python
+                class BaseModel(Typed):
+                    name: str
+                    base_info: Optional[str] = None
+
+                    @classmethod
+                    def validate(cls, data: dict) -> None:
+                        if 'name' in data:
+                            data['base_info'] = f"Base: {data['name']}"
+
+                    def initialize(self) -> None:
+                        print(f"Base model initialized: {self.base_info}")
+
+                class ExtendedModel(BaseModel):
+                    age: int
+                    extended_info: Optional[str] = None
+
+                    @classmethod
+                    def validate(cls, data: dict) -> None:
+                        # Call parent validation
+                        super().validate(data)
+                        # Add extended validation
+                        if 'name' in data and 'age' in data:
+                            data['extended_info'] = f"Extended: {data['name']} is {data['age']} years old"
+
+                    def initialize(self) -> None:
+                        # Call parent initialization
+                        super().initialize()
+                        # Add extended initialization
+                        print(f"Extended model initialized: {self.extended_info}")
+
+                model = ExtendedModel(name="John", age=30)
+                assert model.base_info == "Base: John"
+                assert model.extended_info == "Extended: John is 30 years old"
+                ```
+
+            Factory Method Integration:
+                ```python
+                class FactoryModel(Typed):
+                    name: str
+                    factory_info: Optional[str] = None
+
+                    @classmethod
+                    def validate(cls, data: dict) -> None:
+                        if 'name' in data:
+                            data['factory_info'] = f"Created via factory: {data['name']}"
+
+                    def initialize(self) -> None:
+                        print(f"Factory model initialized: {self.factory_info}")
+
+                # Works with of() factory method
+                model = FactoryModel.of(name="FactoryTest")
+                assert model.factory_info == "Created via factory: FactoryTest"
+                ```
+
+        Performance Considerations:
+            - This method is called for every model instantiation
+            - Avoid expensive operations like network calls or file I/O
+            - Cache expensive computations when possible
+            - Use lazy evaluation for optional initializations
+
+        Thread Safety:
+            - This method operates on the model instance, not shared state
+            - Avoid modifying class-level attributes
+            - Each initialization call receives its own model instance
+
+        Best Practices:
+            - Use for side effects like logging, external system integration, or notifications
+            - Handle errors gracefully with try-catch blocks
+            - Keep initialization logic simple and fast
+            - Document any side effects or external dependencies
+            - Use `validate()` for input transformation and computed fields instead
+
+        See Also:
+            - `validate()`: For input validation and transformation before model creation
+            - `@model_validator(mode="after")`: Pydantic's post-creation validation hook
             - `@field_validator`: Field-level validation for specific fields
             - `model_validate()`: Entry point for dictionary-to-model conversion
         """
