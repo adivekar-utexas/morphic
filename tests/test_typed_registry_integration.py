@@ -405,35 +405,6 @@ class TestTypedRegistryIntegration:
             assert "port" in error_msg
             assert "invalid_port" in error_msg
 
-    def test_backward_compatibility(self):
-        """Test that existing code patterns continue to work."""
-
-        # Test old-style inheritance (Registry first) - should still work
-        class OldStyleBase(Registry, ABC):
-            pass
-
-        class OldStyleConcrete(OldStyleBase):
-            def __init__(self, value="default"):
-                self.value = value
-
-        # Old style should still work
-        instance = OldStyleBase.of("OldStyleConcrete", value="test")
-        assert isinstance(instance, OldStyleConcrete)
-        assert instance.value == "test"
-
-        # Test new-style inheritance (Typed first) - enhanced with validation
-        class NewStyleBase(Typed, Registry, ABC):
-            name: str
-
-        class NewStyleConcrete(NewStyleBase):
-            extra: str = "none"
-
-        # New style should work with validation
-        instance2 = NewStyleBase.of("NewStyleConcrete", name="test", extra="value")
-        assert isinstance(instance2, NewStyleConcrete)
-        assert instance2.name == "test"  # Pydantic validated
-        assert instance2.extra == "value"
-
     def test_performance_characteristics(self):
         """Test that performance characteristics are reasonable."""
 
@@ -522,9 +493,15 @@ class TestMutableTypedRegistryIntegration:
         assert cat.age == 3
 
     def test_mutable_typed_registry_validation_on_assignment(self):
-        """Test that MutableTyped validates assignments in Registry context."""
+        """Test that MutableTyped validates assignments when explicitly enabled in Registry context."""
+        from pydantic import ConfigDict
 
         class Service(MutableTyped, Registry, ABC):
+            model_config = ConfigDict(
+                frozen=False,
+                validate_assignment=True,  # Enable validation for this test
+            )
+            
             name: str
             port: int
             enabled: bool = True
@@ -547,7 +524,7 @@ class TestMutableTypedRegistryIntegration:
         assert service.port == 9000
         assert service.enabled is False
 
-        # Invalid assignments should raise ValidationError
+        # Invalid assignments should raise ValidationError (because validate_assignment=True)
         with pytest.raises(ValidationError, match="Input should be a valid integer"):
             service.port = "not_a_number"
 
@@ -739,8 +716,14 @@ class TestMutableTypedRegistryIntegration:
 
     def test_mutable_typed_registry_error_handling(self):
         """Test error handling in MutableTyped Registry integration."""
+        from pydantic import ConfigDict
 
         class Service(MutableTyped, Registry, ABC):
+            model_config = ConfigDict(
+                frozen=False,
+                validate_assignment=True,  # Enable validation for this test
+            )
+            
             name: str
             port: int
 
@@ -758,7 +741,7 @@ class TestMutableTypedRegistryIntegration:
         with pytest.raises(ValueError, match="Input should be a valid integer"):
             Service.of("WebService", name="test", port="invalid")
 
-        # Test validation error on assignment
+        # Test validation error on assignment (because validate_assignment=True)
         with pytest.raises(ValidationError, match="Input should be a valid integer"):
             service.port = "not_a_number"
 

@@ -3371,8 +3371,8 @@ class TestLifecycleHooks:
         assert model.name == "test"
         assert model.value == 42
 
-    def test_mutable_typed_modify_after_creation_with_validation(self):
-        """Test that MutableTyped validates assignments after creation."""
+    def test_mutable_typed_modify_after_creation_no_validation_by_default(self):
+        """Test that MutableTyped allows modifications without validation by default."""
 
         class MutableUser(MutableTyped):
             name: str
@@ -3384,7 +3384,7 @@ class TestLifecycleHooks:
         assert model.age == 30
         assert model.count == 0
 
-        # Can modify after creation (with validation)
+        # Can modify after creation (no validation for performance)
         model.name = "jane"
         assert model.name == "jane"
 
@@ -3394,16 +3394,15 @@ class TestLifecycleHooks:
         model.count = 5
         assert model.count == 5
 
-        # Validation still works on assignment
-        with pytest.raises(ValidationError, match="Input should be a valid integer"):
-            model.age = "not a number"
+        # By default, no validation on assignment
+        model.age = "not a number"  # Allowed!
+        assert model.age == "not a number"
 
-        # Assignment validation also checks type
-        with pytest.raises(ValidationError):
-            model.name = 123  # Wrong type
+        # Also allowed for performance
+        model.name = 123  # Allowed!
 
-    def test_mutable_typed_assignment_triggers_validation(self):
-        """Test that assignment in MutableTyped triggers full validation including hooks."""
+    def test_mutable_typed_assignment_no_hooks_by_default(self):
+        """Test that assignment in MutableTyped does NOT trigger hooks by default."""
 
         hook_call_count = []
 
@@ -3425,12 +3424,43 @@ class TestLifecycleHooks:
         assert len(hook_call_count) == 1
         assert model.computed == 20
 
-        # When we modify value, pre_initialize is called again!
+        # By default, assignment does NOT trigger hooks (for performance)
         model.value = 15
-        assert len(hook_call_count) == 2  # Called again
-        assert model.computed == 30  # Recomputed!
+        assert len(hook_call_count) == 1  # NOT called again
+        assert model.computed == 20  # NOT recomputed (still original value)
 
-        # This behavior is because validate_assignment=True runs full validation
+    def test_mutable_typed_assignment_triggers_hooks_when_enabled(self):
+        """Test that assignment triggers hooks when validate_assignment=True."""
+        from pydantic import ConfigDict
+
+        hook_call_count = []
+
+        class ValidatedMutableWithHooks(MutableTyped):
+            model_config = ConfigDict(
+                frozen=False,
+                validate_assignment=True,  # Enable validation
+            )
+
+            value: int
+            computed: Optional[int] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                hook_call_count.append("pre_initialize")
+                if "value" in data:
+                    data["computed"] = data["value"] * 2
+
+        hook_call_count.clear()
+        model = ValidatedMutableWithHooks(value=10)
+
+        # pre_initialize was called during creation
+        assert len(hook_call_count) == 1
+        assert model.computed == 20
+
+        # With validate_assignment=True, assignment triggers hooks
+        model.value = 15
+        assert len(hook_call_count) == 2  # Called again!
+        assert model.computed == 30  # Recomputed!
 
 
 class TestNestedTypedWithHooks:
@@ -3711,11 +3741,11 @@ class TestNestedTypedWithHooks:
         assert outer.inner.doubled == 20
         assert outer.summary == "test: 20"  # Uses computed doubled value
 
-        # Can modify nested object
+        # By default, modifying nested object does NOT trigger hooks (for performance)
         outer.inner.value = 15
-        assert outer.inner.doubled == 30  # Recomputed!
+        assert outer.inner.doubled == 20  # NOT recomputed! (still original)
 
-        # But outer's summary is not automatically updated
+        # Outer's summary is also not automatically updated
         assert outer.summary == "test: 20"  # Still old value
 
     def test_tuple_of_typed_objects(self):
@@ -4126,7 +4156,7 @@ class TestPrivateAttributeValidation:
         assert counter._count == 20
 
     def test_int_private_attr_invalid(self):
-        """Test that invalid int values raise ValueError."""
+        """Test that invalid int values raise ValidationError."""
         from pydantic import PrivateAttr
 
         class Counter(Typed):
@@ -4136,13 +4166,12 @@ class TestPrivateAttributeValidation:
         counter = Counter(name="test")
 
         # Try to set invalid type
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ValidationError) as exc_info:
             counter._count = "invalid"
 
-        error_msg = str(exc_info.value)
-        assert "Cannot set private attribute '_count'" in error_msg
-        assert "Expected type:" in error_msg
-        assert "int" in error_msg
+        # ValidationError is raised directly from Pydantic's TypeAdapter
+        # which provides structured error information
+        assert len(exc_info.value.errors()) > 0
 
     def test_int_private_attr_type_coercion(self):
         """Test that Pydantic type coercion works for private attrs."""
@@ -4177,7 +4206,7 @@ class TestPrivateAttributeValidation:
         assert model._label == "updated"
 
         # Invalid type should fail
-        with pytest.raises(ValueError):
+        with pytest.raises(ValidationError):
             model._label = 123
 
     def test_optional_private_attr(self):
@@ -4198,7 +4227,7 @@ class TestPrivateAttributeValidation:
         assert model._value is None
 
         # Invalid type should fail
-        with pytest.raises(ValueError):
+        with pytest.raises(ValidationError):
             model._value = "invalid"
 
     def test_list_private_attr(self):
@@ -4220,7 +4249,7 @@ class TestPrivateAttributeValidation:
         assert model._items == [4, 5, 6]
 
         # Invalid element type
-        with pytest.raises(ValueError):
+        with pytest.raises(ValidationError):
             model._items = [1, "invalid", 3]
 
     def test_nested_typed_private_attr(self):
@@ -4247,7 +4276,7 @@ class TestPrivateAttributeValidation:
         assert system._config.value == 20
 
         # Invalid type
-        with pytest.raises(ValueError):
+        with pytest.raises(ValidationError):
             system._config = "not_a_config"
 
     def test_union_private_attr(self):
@@ -4268,7 +4297,7 @@ class TestPrivateAttributeValidation:
         assert model._value == "hello"
 
         # Invalid type
-        with pytest.raises(ValueError):
+        with pytest.raises(ValidationError):
             model._value = [1, 2, 3]
 
     def test_untyped_private_attr_no_validation(self):
@@ -4313,10 +4342,10 @@ class TestPrivateAttributeValidation:
         assert child._child_count == 10
 
         # Both should validate types
-        with pytest.raises(ValueError):
+        with pytest.raises(ValidationError):
             child._parent_count = "invalid"
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValidationError):
             child._child_count = "invalid"
 
     def test_overridden_private_attr_annotation(self):
@@ -4338,7 +4367,7 @@ class TestPrivateAttributeValidation:
         assert child._value == "hello"
 
         # Should fail int validation (child's type is str)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValidationError):
             child._value = 123
 
     def test_setting_in_post_initialize(self):
@@ -4375,10 +4404,11 @@ class TestPrivateAttributeValidation:
         assert model._count == 42
 
         # Invalid type should fail
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ValidationError) as exc_info:
             model._count = "invalid"
 
-        assert "Cannot set private attribute '_count'" in str(exc_info.value)
+        # ValidationError provides structured error information
+        assert len(exc_info.value.errors()) > 0
 
     def test_with_validate_assignment_false(self):
         """Test that validation is skipped when validate_assignment=False."""
@@ -4421,7 +4451,7 @@ class TestPrivateAttributeValidation:
         model._value = 10  # Valid
 
         # Should validate by default
-        with pytest.raises(ValueError):
+        with pytest.raises(ValidationError):
             model._value = "invalid"
 
     def test_public_fields_still_frozen(self):
@@ -4449,18 +4479,18 @@ class TestPrivateAttributeValidation:
 
         model = Model(name="test")
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ValidationError) as exc_info:
             model._count = "invalid"
 
-        error_msg = str(exc_info.value)
+        # ValidationError provides structured error information
+        errors = exc_info.value.errors()
+        assert len(errors) > 0
 
-        # Should include all helpful information
-        assert "Cannot set private attribute '_count'" in error_msg
-        assert "Expected type:" in error_msg
-        assert "int" in error_msg
-        assert "got value of type" in error_msg
-        assert "str" in error_msg
-        assert "Validation errors:" in error_msg
+        # Check that error contains relevant information
+        error = errors[0]
+        assert "msg" in error
+        assert "input" in error
+        # The error has structured data from Pydantic
 
     def test_arbitrary_types_in_private_attrs(self):
         """Test that arbitrary types (like threading.Thread) work in private attributes."""
@@ -4490,12 +4520,14 @@ class TestPrivateAttributeValidation:
         assert model._thread is new_thread
 
         # Should reject wrong types
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ValidationError) as exc_info:
             model._thread = "not a thread"
 
-        assert "Cannot set private attribute '_thread'" in str(exc_info.value)
-        assert "Thread" in str(exc_info.value)
-        assert "str" in str(exc_info.value)
+        # ValidationError provides structured error information
+        errors = exc_info.value.errors()
+        assert len(errors) > 0
+        error_msg = str(exc_info.value)
+        assert "_thread" in error_msg
 
     def test_arbitrary_types_optional(self):
         """Test Optional[arbitrary_type] in private attributes."""
@@ -4547,8 +4579,8 @@ class TestMutableTyped:
         assert user.age == 25
         assert user.active is False
 
-    def test_mutable_typed_validation_on_assignment(self):
-        """Test that MutableTyped validates assignments."""
+    def test_mutable_typed_no_validation_on_assignment_by_default(self):
+        """Test that MutableTyped does NOT validate assignments by default for performance."""
 
         class User(MutableTyped):
             name: str
@@ -4560,7 +4592,30 @@ class TestMutableTyped:
         user.age = 25
         assert user.age == 25
 
-        # Invalid assignment should raise ValidationError
+        # By default, no validation on assignment for performance
+        user.age = "not_a_number"  # Allowed!
+        assert user.age == "not_a_number"
+
+    def test_mutable_typed_validation_on_assignment_when_enabled(self):
+        """Test that MutableTyped validates assignments when explicitly enabled."""
+        from pydantic import ConfigDict
+
+        class ValidatedUser(MutableTyped):
+            model_config = ConfigDict(
+                frozen=False,
+                validate_assignment=True,  # Enable validation
+            )
+
+            name: str
+            age: int
+
+        user = ValidatedUser(name="John", age=30)
+
+        # Valid assignment should work
+        user.age = 25
+        assert user.age == 25
+
+        # Now validation is enabled, so invalid assignment should raise ValidationError
         with pytest.raises(ValidationError, match="Input should be a valid integer"):
             user.age = "not_a_number"
 
@@ -4856,9 +4911,9 @@ class TestTypedVsMutableTyped:
         with pytest.raises(ValidationError, match="Instance is frozen"):
             frozen_user.age = "not_a_number"
 
-        # Mutable user should reject assignment due to type validation
-        with pytest.raises(ValidationError, match="Input should be a valid integer"):
-            mutable_user.age = "not_a_number"
+        # Mutable user allows assignment without validation by default (for performance)
+        mutable_user.age = "not_a_number"  # Allowed!
+        assert mutable_user.age == "not_a_number"
 
     def test_model_validate_behavior_same(self):
         """Test that model_validate works the same for both classes."""

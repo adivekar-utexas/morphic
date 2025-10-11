@@ -354,7 +354,7 @@ class Typed(BaseModel, ABC):
         ## https://docs.pydantic.dev/latest/api/config/#pydantic.config.ConfigDict.arbitrary_types_allowed
         arbitrary_types_allowed=True,
         ## Ref: https://docs.pydantic.dev/latest/api/config/#pydantic.config.ConfigDict.validate_assignment
-        validate_assignment=False,
+        validate_assignment=False,  ## Unnecessary since Typed is frozen
         ## Custom setting for private attribute validation
         validate_private_assignment=True,
     )
@@ -849,8 +849,8 @@ class Typed(BaseModel, ABC):
             value (Any): The value to assign to the attribute.
 
         Raises:
-            ValueError: If the value fails validation for a typed private attribute
-                when validate_private_assignment=True. The error message includes:
+            ValidationError: If the value fails validation for a typed private attribute
+                when validate_private_assignment=True. The error includes:
                 - The attribute name
                 - The expected type
                 - The actual value and its type
@@ -876,7 +876,7 @@ class Typed(BaseModel, ABC):
 
                 try:
                     counter._count = "invalid"  # Invalid: wrong type
-                except ValueError as e:
+                except ValidationError as e:
                     print(e)  # Detailed error about type mismatch
                 ```
 
@@ -914,7 +914,7 @@ class Typed(BaseModel, ABC):
                 cache._cached_value = None  # Valid
                 try:
                     cache._cached_value = 123  # Invalid: int not str
-                except ValueError as e:
+                except ValidationError as e:
                     print(e)
                 ```
 
@@ -933,7 +933,7 @@ class Typed(BaseModel, ABC):
                 processor._buffer = [4, 5, 6]  # Valid
                 try:
                     processor._buffer = "not a list"  # Invalid
-                except ValueError as e:
+                except ValidationError as e:
                     print(e)
                 ```
 
@@ -953,7 +953,7 @@ class Typed(BaseModel, ABC):
                 system._config = Config(value=20)  # Valid
                 try:
                     system._config = {"value": 30}  # Invalid: dict not Config
-                except ValueError as e:
+                except ValidationError as e:
                     print(e)
                 ```
 
@@ -1036,17 +1036,33 @@ class Typed(BaseModel, ABC):
 
                         if value is None:
                             if not none_allowed:
-                                raise ValueError(
-                                    f"Cannot set private attribute '{name}' on {self.class_name} instance. "
-                                    f"Expected type: {expected_type}, but got None"
+                                raise ValidationError.from_exception_data(
+                                    title=f"{self.class_name}.{name}",
+                                    line_errors=[
+                                        {
+                                            "type": "none_required",
+                                            "loc": (name,),
+                                            "msg": f"Cannot set private attribute '{name}' on {self.class_name} instance. Expected type: {expected_type}, but got None",
+                                            "input": value,
+                                            "ctx": {"expected": str(expected_type)},
+                                        }
+                                    ],
                                 )
                         elif non_none_types:
                             # Check if value matches any of the non-None types
                             if not any(isinstance(value, t) for t in non_none_types):
                                 type_names = " or ".join(t.__name__ for t in non_none_types)
-                                raise ValueError(
-                                    f"Cannot set private attribute '{name}' on {self.class_name} instance. "
-                                    f"Expected type: {type_names}, but got value of type {type(value).__name__}: {value!r}"
+                                raise ValidationError.from_exception_data(
+                                    title=f"{self.class_name}.{name}",
+                                    line_errors=[
+                                        {
+                                            "type": "is_instance_of",
+                                            "loc": (name,),
+                                            "msg": f"Cannot set private attribute '{name}' on {self.class_name} instance. Expected type: {type_names}, but got value of type {type(value).__name__}",
+                                            "input": value,
+                                            "ctx": {"class": type_names},
+                                        }
+                                    ],
                                 )
                         # else: Union with no concrete types, skip validation
                     elif origin is not None:
@@ -1056,27 +1072,22 @@ class Typed(BaseModel, ABC):
                     elif isinstance(expected_type, type):
                         # For concrete types, perform a simple isinstance check
                         if not isinstance(value, expected_type):
-                            raise ValueError(
-                                f"Cannot set private attribute '{name}' on {self.class_name} instance. "
-                                f"Expected type: {expected_type.__name__}, but got value of type {type(value).__name__}: {value!r}"
+                            raise ValidationError.from_exception_data(
+                                title=f"{self.class_name}.{name}",
+                                line_errors=[
+                                    {
+                                        "type": "is_instance_of",
+                                        "loc": (name,),
+                                        "msg": f"Cannot set private attribute '{name}' on {self.class_name} instance. Expected type: {expected_type.__name__}, but got value of type {type(value).__name__}",
+                                        "input": value,
+                                        "ctx": {"class": expected_type.__name__},
+                                    }
+                                ],
                             )
                     # else: For non-type annotations (e.g., type variables), skip validation
                 except ValidationError as e:
-                    # Provide a detailed error message
-                    errors_str = ""
-                    for error_i, error in enumerate(e.errors()):
-                        assert isinstance(error, dict)
-                        error_msg: str = textwrap.indent(error.get("msg", ""), "    ").strip()
-                        errors_str += "\n"
-                        errors_str += textwrap.indent(
-                            f"[Error#{error_i + 1}] ValidationError:\n{error_msg}", "  "
-                        )
-
-                    raise ValueError(
-                        f"Cannot set private attribute '{name}' on {self.class_name} instance. "
-                        f"Expected type: {expected_type}, but got value of type {type(value).__name__}: {value!r}"
-                        f"\nValidation errors: {errors_str}"
-                    )
+                    # Re-raise ValidationError directly for consistency with Pydantic
+                    raise e
                 except Exception:
                     # Catch any other unexpected errors during validation
                     # (e.g., TypeAdapter was created but validation fails for arbitrary types)
@@ -1092,17 +1103,33 @@ class Typed(BaseModel, ABC):
 
                         if value is None:
                             if not none_allowed:
-                                raise ValueError(
-                                    f"Cannot set private attribute '{name}' on {self.class_name} instance. "
-                                    f"Expected type: {expected_type}, but got None"
+                                raise ValidationError.from_exception_data(
+                                    title=f"{self.class_name}.{name}",
+                                    line_errors=[
+                                        {
+                                            "type": "none_required",
+                                            "loc": (name,),
+                                            "msg": f"Cannot set private attribute '{name}' on {self.class_name} instance. Expected type: {expected_type}, but got None",
+                                            "input": value,
+                                            "ctx": {"expected": str(expected_type)},
+                                        }
+                                    ],
                                 )
                         elif non_none_types:
                             # Check if value matches any of the non-None types
                             if not any(isinstance(value, t) for t in non_none_types):
                                 type_names = " or ".join(t.__name__ for t in non_none_types)
-                                raise ValueError(
-                                    f"Cannot set private attribute '{name}' on {self.class_name} instance. "
-                                    f"Expected type: {type_names}, but got value of type {type(value).__name__}: {value!r}"
+                                raise ValidationError.from_exception_data(
+                                    title=f"{self.class_name}.{name}",
+                                    line_errors=[
+                                        {
+                                            "type": "is_instance_of",
+                                            "loc": (name,),
+                                            "msg": f"Cannot set private attribute '{name}' on {self.class_name} instance. Expected type: {type_names}, but got value of type {type(value).__name__}",
+                                            "input": value,
+                                            "ctx": {"class": type_names},
+                                        }
+                                    ],
                                 )
                         # else: Union with no concrete types, skip validation
                     elif origin is not None:
@@ -1111,9 +1138,17 @@ class Typed(BaseModel, ABC):
                     elif isinstance(expected_type, type):
                         # For concrete types, perform a simple isinstance check
                         if not isinstance(value, expected_type):
-                            raise ValueError(
-                                f"Cannot set private attribute '{name}' on {self.class_name} instance. "
-                                f"Expected type: {expected_type.__name__}, but got value of type {type(value).__name__}: {value!r}"
+                            raise ValidationError.from_exception_data(
+                                title=f"{self.class_name}.{name}",
+                                line_errors=[
+                                    {
+                                        "type": "is_instance_of",
+                                        "loc": (name,),
+                                        "msg": f"Cannot set private attribute '{name}' on {self.class_name} instance. Expected type: {expected_type.__name__}, but got value of type {type(value).__name__}",
+                                        "input": value,
+                                        "ctx": {"class": expected_type.__name__},
+                                    }
+                                ],
                             )
                     # else: For non-type annotations, skip validation
 
@@ -2283,19 +2318,20 @@ class MutableTyped(Typed):
 
     Unlike the base Typed class which is frozen (immutable), MutableTyped instances
     can have their fields modified after creation. This is useful when you need
-    to update model instances during runtime while still maintaining type validation.
+    to update model instances during runtime, especially in tight loops or with
+    frequent modifications where validation overhead should be minimized.
 
     Key Features:
     - **Mutable**: Fields can be modified after instantiation
-    - **Validated**: All assignments are validated against field types
-    - **Type Safe**: Maintains the same type checking as Typed
+    - **Performance Optimized**: No validation on assignment by default for speed
+    - **Type Safe at Creation**: Full validation during instantiation
     - **Pydantic Compatible**: Built on Pydantic's validation system
-    - **Assignment Validation**: Each assignment triggers full validation pipeline
+    - **Optional Validation**: Can enable assignment validation if needed
 
     Configuration:
     - `frozen=False`: Allows field modification
-    - `validate_assignment=True`: Validates public field assignments (Pydantic feature)
-    - `validate_private_assignment=True`: Validates private attribute assignments (inherited from Typed)
+    - `validate_assignment=False`: Disabled by default for performance (can be enabled)
+    - `validate_private_assignment=False`: Private attrs not validated (inherited default)
 
     Basic Usage:
         ```python
@@ -2318,15 +2354,39 @@ class MutableTyped(Typed):
         frozen_user.name = "Jane"  # This would raise ValidationError
         ```
 
-    Validation on Assignment:
-        All field assignments are validated against the declared types:
+    No Validation on Assignment (Default):
+        By default, assignments are NOT validated for performance:
 
         ```python
         user = User(name="John", age=30)
-        user.age = "not_a_number"  # Raises ValidationError
+        user.age = "not_a_number"  # Allowed! No validation on assignment
+        user.name = 123  # Also allowed for performance
 
-        # Type checking is enforced
-        user.name = 123  # Raises ValidationError (expects str)
+        # This is intentional for high-performance scenarios like tight loops
+        for i in range(1000000):
+            user.age = i  # Fast - no validation overhead
+        ```
+
+    Enabling Validation on Assignment (Optional):
+        If you need validation on assignment, enable it explicitly:
+
+        ```python
+        from pydantic import ConfigDict
+
+        class ValidatedUser(MutableTyped):
+            model_config = ConfigDict(
+                frozen=False,
+                validate_assignment=True,  # Enable validation
+            )
+
+            name: str
+            age: int
+
+        user = ValidatedUser(name="John", age=30)
+        try:
+            user.age = "not_a_number"  # Now raises ValidationError
+        except ValidationError:
+            print("Validation enforced!")
         ```
 
     Hooks and Derived Fields:
@@ -2359,34 +2419,35 @@ class MutableTyped(Typed):
         print(user.score)  # 250 (recomputed by pre_initialize!)
         ```
 
-    Assignment Triggers Full Validation:
-        When you assign to a field in MutableTyped, the full validation pipeline
-        runs, including pre-hooks. This means derived fields can be recomputed:
+    Performance Considerations:
+        By default, MutableTyped prioritizes performance over validation:
 
         ```python
-        class Product(MutableTyped):
-            price: float
-            tax_rate: float = 0.1
-            total: Optional[float] = None
+        class Counter(MutableTyped):
+            count: int = 0
+            label: str = "counter"
 
-            @classmethod
-            def pre_initialize(cls, data: Dict) -> None:
-                if 'price' in data:
-                    tax_rate = data.get('tax_rate', 0.1)
-                    data['total'] = data['price'] * (1 + tax_rate)
+        counter = Counter()
 
-        product = Product(price=100.0)
-        print(product.total)  # 110.0
+        # Fast - no validation overhead
+        for i in range(1000000):
+            counter.count = i  # Direct assignment, no validation
 
-        # Assignment triggers pre_initialize again
-        product.price = 200.0
-        print(product.total)  # 220.0 (automatically recomputed!)
+        # Validation only happens at creation time
+        counter2 = Counter(count="invalid")  # Raises ValidationError
         ```
 
-    Performance Considerations:
-        - Each assignment triggers full validation (including hooks)
-        - This provides consistency but has performance cost
-        - For bulk updates, consider creating a new instance instead
+        When to Enable validate_assignment=True:
+        - When data integrity is critical and performance is not
+        - When assignments come from untrusted sources
+        - When you need to catch type errors during development
+        - When assignment frequency is low
+
+        When to Keep validate_assignment=False (default):
+        - High-performance scenarios (tight loops, frequent updates)
+        - Internal state management where types are controlled
+        - When you trust the assignment sources
+        - When you want minimal overhead
 
     See Also:
         - `Typed`: The base frozen (immutable) class
@@ -2400,7 +2461,8 @@ class MutableTyped(Typed):
         ## Ref: https://docs.pydantic.dev/latest/api/config/#pydantic.config.ConfigDict.frozen
         frozen=False,
         ## Ref: https://docs.pydantic.dev/latest/api/config/#pydantic.config.ConfigDict.validate_assignment
-        validate_assignment=True,
+        ## Disabled by default for performance in tight loops and frequent modifications
+        validate_assignment=False,
         ## Custom setting for private attribute validation
         validate_private_assignment=False,
     )

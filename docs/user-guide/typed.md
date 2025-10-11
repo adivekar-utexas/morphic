@@ -76,7 +76,7 @@ mutable_user = MutableUserModel(
 print(f"Initial: {mutable_user.name}, Active: {mutable_user.is_active}")
 # Output: Initial: Alice Johnson, Active: True
 
-# Can modify fields after creation
+# Can modify fields after creation (no validation by default for performance)
 mutable_user.name = "Bob Smith"
 mutable_user.age = 31
 mutable_user.is_active = False
@@ -84,9 +84,24 @@ mutable_user.is_active = False
 print(f"Modified: {mutable_user.name}, Age: {mutable_user.age}, Active: {mutable_user.is_active}")
 # Output: Modified: Bob Smith, Age: 31, Active: False
 
-# All modifications are validated
+# By default, no validation on assignment for high performance
+mutable_user.age = "anything"  # Allowed for performance!
+
+# To enable validation, explicitly set validate_assignment=True
+from pydantic import ConfigDict
+
+class ValidatedUserModel(MutableTyped):
+    model_config = ConfigDict(
+        frozen=False,
+        validate_assignment=True,  # Enable validation
+    )
+    
+    name: str
+    age: int
+
+validated_user = ValidatedUserModel(name="John", age=30)
 try:
-    mutable_user.age = "not_a_number"  # This will raise ValidationError
+    validated_user.age = "not_a_number"  # Now raises ValidationError
 except ValidationError:
     print("Invalid type assignment rejected")
 ```
@@ -132,10 +147,11 @@ Typed leverages Pydantic's powerful configuration system to provide robust data 
 
 ### MutableTyped Configuration
 
-MutableTyped uses the same configuration as Typed with one key difference:
+MutableTyped uses the same configuration as Typed with key differences:
 
 - `frozen=False` - Models can be modified after instantiation
-- `validate_assignment=True` - All field assignments are validated
+- `validate_assignment=False` - No validation on assignment by default (for performance)
+- `validate_private_assignment=False` - Private attribute validation also disabled by default
 
 ```python
 class MutableConfig(MutableTyped):
@@ -144,13 +160,28 @@ class MutableConfig(MutableTyped):
 
 config = MutableConfig(name="test", value=42)
 
-# Can modify fields
+# Can modify fields without validation (for performance)
 config.name = "updated"
 config.value = 100
+config.value = "anything"  # Allowed! No validation for performance
 
-# All assignments are validated
+# To enable validation on assignment:
+from pydantic import ConfigDict
+
+class ValidatedMutableConfig(MutableTyped):
+    model_config = ConfigDict(
+        frozen=False,
+        validate_assignment=True,  # Enable validation
+    )
+    
+    name: str
+    value: int
+
+validated_config = ValidatedMutableConfig(name="test", value=42)
+validated_config.value = 100  # Valid
+
 try:
-    config.value = "not_a_number"  # Raises ValidationError
+    validated_config.value = "not_a_number"  # Now raises ValidationError
 except ValidationError:
     print("Assignment validation failed")
 ```
@@ -261,7 +292,7 @@ assert len(list1.tasks) == 1  # Original unchanged
 
 ### Mutable Models with Direct Modification
 
-MutableTyped allows direct field modification while maintaining validation:
+MutableTyped allows direct field modification without validation by default for performance:
 
 ```python
 class MutableTaskList(MutableTyped):
@@ -272,7 +303,7 @@ class MutableTaskList(MutableTyped):
 # Create mutable instance
 mutable_list = MutableTaskList()
 
-# Can modify fields directly
+# Can modify fields directly (no validation for performance)
 mutable_list.name = "Updated List"
 mutable_list.tasks = ["task1", "task2", "task3"]
 mutable_list.metadata = {"updated": "now", "version": "2.0"}
@@ -281,9 +312,24 @@ print(f"Name: {mutable_list.name}")
 print(f"Tasks: {mutable_list.tasks}")
 print(f"Metadata: {mutable_list.metadata}")
 
-# All modifications are validated
+# By default, no validation on assignment
+mutable_list.tasks = "not_a_list"  # Allowed for performance!
+
+# To enable validation, use validate_assignment=True
+from pydantic import ConfigDict
+
+class ValidatedTaskList(MutableTyped):
+    model_config = ConfigDict(
+        frozen=False,
+        validate_assignment=True,  # Enable validation
+    )
+    
+    name: str = "Default List"
+    tasks: List[str] = Field(default_factory=list)
+
+validated_list = ValidatedTaskList()
 try:
-    mutable_list.tasks = "not_a_list"  # Raises ValidationError
+    validated_list.tasks = "not_a_list"  # Now raises ValidationError
 except ValidationError:
     print("Invalid assignment rejected")
 ```
@@ -1080,10 +1126,11 @@ class CustomOrder(Typed):
 
 ### MutableTyped and Hooks
 
-`MutableTyped` is a variant of `Typed` that allows field modification after creation. It has two key differences:
+`MutableTyped` is a variant of `Typed` that allows field modification after creation. It has key differences optimized for performance:
 
 1. **`frozen=False`**: Fields can be modified after instantiation
-2. **`validate_assignment=True`**: Each assignment triggers full validation (including hooks!)
+2. **`validate_assignment=False`**: No validation on assignment by default (for high performance)
+3. **`validate_private_assignment=False`**: Private attrs also not validated by default
 
 #### Basic Usage
 
@@ -1095,17 +1142,30 @@ class User(MutableTyped):
     age: int
     active: bool = True
 
-# Create instance
+# Create instance (full validation at creation)
 user = User(name="John", age=30)
 
-# Can modify fields (unlike regular Typed)
+# Can modify fields without validation (for performance)
 user.name = "Jane"
 user.age = 25
+user.age = "anything"  # Allowed! No validation for performance
 print(user.name)  # "Jane"
 
-# Validation still works
+# To enable validation, set validate_assignment=True
+from pydantic import ConfigDict
+
+class ValidatedUser(MutableTyped):
+    model_config = ConfigDict(
+        frozen=False,
+        validate_assignment=True,  # Enable validation
+    )
+    
+    name: str
+    age: int
+
+validated_user = ValidatedUser(name="John", age=30)
 try:
-    user.age = "not a number"  # ValidationError!
+    validated_user.age = "not a number"  # Now raises ValidationError!
 except ValidationError as e:
     print(e)
 ```
@@ -1134,9 +1194,9 @@ user = UserWithScore(name="John", age=30)
 print(user.score)  # 300
 ```
 
-#### Assignment Triggers Full Validation
+#### Assignment Does NOT Trigger Hooks by Default
 
-**Key Behavior**: When you assign to a field in `MutableTyped`, the full validation pipeline runs, including all pre-hooks. This means derived fields are automatically recomputed:
+**Key Behavior**: By default, assignments in `MutableTyped` do NOT trigger validation or hooks. This is optimized for performance in tight loops and frequent modifications:
 
 ```python
 class Product(MutableTyped):
@@ -1153,9 +1213,35 @@ class Product(MutableTyped):
 product = Product(price=100.0)
 print(product.total)  # 110.0
 
-# Assignment triggers pre_initialize again!
+# By default, assignment does NOT trigger hooks (for performance)
 product.price = 200.0
-print(product.total)  # 220.0 (automatically recomputed!)
+print(product.total)  # Still 110.0! (NOT recomputed)
+
+# To enable hook triggering, set validate_assignment=True
+from pydantic import ConfigDict
+
+class ValidatedProduct(MutableTyped):
+    model_config = ConfigDict(
+        frozen=False,
+        validate_assignment=True,  # Enable validation and hooks
+    )
+    
+    price: float
+    tax_rate: float = 0.1
+    total: Optional[float] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        if 'price' in data:
+            tax_rate = data.get('tax_rate', 0.1)
+            data['total'] = data['price'] * (1 + tax_rate)
+
+validated_product = ValidatedProduct(price=100.0)
+print(validated_product.total)  # 110.0
+
+# Now assignment triggers pre_initialize!
+validated_product.price = 200.0
+print(validated_product.total)  # 220.0 (automatically recomputed!)
 ```
 
 #### Why Post-Hooks Can't Modify Instance
@@ -1191,31 +1277,62 @@ class GoodExample(MutableTyped):
 - Data should not change after validation
 - Working with configuration or settings
 - Building data transfer objects (DTOs)
+- Need hashable objects (dict keys, set members)
 
 **Use `MutableTyped` when:**
 - Need to modify fields after creation
 - Building state machines or mutable models
 - Working with ORM-like patterns
-- Want automatic recomputation of derived fields on assignment
+- Frequent field updates in tight loops (benefits from no validation overhead)
+- Want optional validation with `validate_assignment=True` when needed
 
 #### Performance Considerations
 
-`MutableTyped` has higher overhead:
-- Each assignment triggers full validation
-- Pre-hooks run on every assignment
-- More memory overhead due to validation machinery
+**By default, `MutableTyped` is optimized for performance:**
+- No validation overhead on assignment (fast modifications)
+- No hook execution on assignment (minimal overhead)
+- Ideal for tight loops and frequent updates
 
 ```python
-# For bulk updates, consider creating new instance instead
-old_product = Product(price=100.0, tax_rate=0.1)
+class Counter(MutableTyped):
+    count: int = 0
+    label: str = "counter"
 
-# Instead of multiple assignments (triggers validation each time):
-# product.price = 200.0
-# product.tax_rate = 0.15  # Each triggers validation
+counter = Counter()
 
-# Better: Create new instance
-new_product = Product(price=200.0, tax_rate=0.15)  # One validation cycle
+# Very fast - no validation overhead
+for i in range(1000000):
+    counter.count = i  # Direct assignment, no validation
+
+# If you need validation, enable it explicitly
+from pydantic import ConfigDict
+
+class ValidatedCounter(MutableTyped):
+    model_config = ConfigDict(
+        frozen=False,
+        validate_assignment=True,  # Enable validation
+    )
+    
+    count: int = 0
+
+validated_counter = ValidatedCounter()
+
+# Now has validation overhead (but ensures correctness)
+for i in range(1000):
+    validated_counter.count = i  # Validated each time
 ```
+
+**When to enable `validate_assignment=True`:**
+- Data integrity is critical
+- Assignments come from untrusted sources
+- Catching type errors during development
+- Assignment frequency is low
+
+**When to keep `validate_assignment=False` (default):**
+- High-performance scenarios (tight loops, frequent updates)
+- Internal state management where types are controlled
+- You trust the assignment sources
+- You want minimal overhead
 
 ### Nested Typed Objects and Hooks
 
@@ -2391,12 +2508,12 @@ counter = Counter(name="MyCounter")
 counter._count = 20  # ✓ Valid: int value
 counter._count = "42"  # ✓ Valid: string coerced to int(42)
 
-# Invalid assignments raise ValueError with detailed error message
+# Invalid assignments raise ValidationError with detailed error message
 try:
     counter._count = "invalid"  # ✗ Cannot convert to int
-except ValueError as e:
+except ValidationError as e:
     print(e)
-    # Output: Cannot set private attribute '_count'. Expected type: int, got value of type str...
+    # Output: Pydantic ValidationError with structured error information
 ```
 
 ### Type Coercion
@@ -2510,8 +2627,8 @@ manager._thread = new_thread  # ✓ Valid: Thread instance
 # Type checking still enforced
 try:
     manager._thread = "not a thread"  # ✗ TypeError
-except ValueError as e:
-    print(e)  # Error: Expected type: Thread, got value of type str
+except ValidationError as e:
+    print(e)  # Error: Pydantic ValidationError with type mismatch details
 ```
 
 **How It Works:**
@@ -2561,7 +2678,7 @@ class ValidatedModel(Typed):
 
 model = ValidatedModel(name="test")
 model._count = 42  # ✓ Validated
-# model._count = "invalid"  # ✗ Raises ValueError
+# model._count = "invalid"  # ✗ Raises ValidationError
 
 # Validation disabled
 class UnvalidatedModel(Typed):
@@ -2600,8 +2717,8 @@ child._parent_data = 42  # ✓ Valid: int
 child._child_data = "data"  # ✓ Valid: str
 
 # Both enforce their types
-# child._parent_data = "invalid"  # ✗ ValueError
-# child._child_data = 123  # ✗ ValueError
+# child._parent_data = "invalid"  # ✗ ValidationError
+# child._child_data = 123  # ✗ ValidationError
 ```
 
 Child classes can override parent private attribute types:
@@ -2619,7 +2736,7 @@ child = Child(name="test", age=10)
 
 # Child's type annotation takes precedence
 child._value = "hello"  # ✓ Valid: str (child's type)
-# child._value = 123  # ✗ ValueError (child expects str)
+# child._value = 123  # ✗ ValidationError (child expects str)
 ```
 
 ### Using with post_initialize
@@ -2661,9 +2778,10 @@ model = Model(name="test")
 
 try:
     model._count = "invalid"
-except ValueError as e:
+except ValidationError as e:
     print(e)
-    # Output:
+    # Output: Pydantic ValidationError with structured error information
+    # Including:
     # Cannot set private attribute '_count'.
     # Expected type: int, got value of type str: 'invalid'
     # Validation errors:
@@ -2693,7 +2811,7 @@ except ValueError as e:
 
 ### MutableTyped and Private Attributes
 
-`MutableTyped` also validates private attributes by default (inherits `validate_private_assignment=True` from `Typed`):
+`MutableTyped` does NOT validate private attributes by default (for performance):
 
 ```python
 class MutableCounter(MutableTyped):
@@ -2702,17 +2820,34 @@ class MutableCounter(MutableTyped):
 
 counter = MutableCounter(name="test")
 
-# Private attributes validated (via validate_private_assignment=True)
+# By default, no validation for performance
 counter._count = 10  # ✓ Valid
-# counter._count = "invalid"  # ✗ ValueError
+counter._count = "anything"  # ✓ Also valid (no validation)
 
-# Public fields can also be modified (via validate_assignment=True for MutableTyped)
-counter.name = "updated"  # ✓ Valid (MutableTyped allows and validates this)
+# Public fields can also be modified without validation
+counter.name = "updated"  # ✓ Valid (no validation by default)
+
+# To enable validation, set validate_assignment=True and validate_private_assignment=True
+from pydantic import ConfigDict
+
+class ValidatedCounter(MutableTyped):
+    model_config = ConfigDict(
+        frozen=False,
+        validate_assignment=True,  # Validate public fields
+        validate_private_assignment=True,  # Validate private attrs
+    )
+    
+    name: str
+    _count: int = PrivateAttr(default=0)
+
+validated_counter = ValidatedCounter(name="test")
+validated_counter._count = 10  # ✓ Valid
+# validated_counter._count = "invalid"  # ✗ Now raises ValidationError
 ```
 
 **Configuration Summary:**
-- `Typed`: `frozen=True`, `validate_private_assignment=True` (private attrs validated, public fields frozen)
-- `MutableTyped`: `frozen=False`, `validate_assignment=True`, `validate_private_assignment=True` (both public and private validated)
+- `Typed`: `frozen=True`, `validate_assignment=False`, `validate_private_assignment=True` (private attrs validated, public fields frozen)
+- `MutableTyped`: `frozen=False`, `validate_assignment=False`, `validate_private_assignment=False` (neither validated by default for performance)
 
 ## Choosing Between Typed and MutableTyped
 
@@ -2741,6 +2876,8 @@ config = DatabaseConfig(host="localhost", port=5432, database="myapp")
 Use `MutableTyped` when you need:
 - **Dynamic updates** - Fields that change during runtime
 - **State management** - Objects that represent changing state
+- **High-frequency updates** - Tight loops or frequent modifications (benefits from no validation)
+- **Performance-critical code** - Fast modifications without validation overhead
 - **User input processing** - Forms or data that gets updated
 - **Caching objects** - Data that gets refreshed periodically
 - **Builder patterns** - Objects constructed incrementally
@@ -2751,30 +2888,63 @@ class UserSession(MutableTyped):
     login_time: datetime
     last_activity: datetime
     permissions: List[str] = []
+    request_count: int = 0
 
-# Session state can be updated as user interacts
-session = UserSession(user_id="123", login_time=datetime.now())
-session.last_activity = datetime.now()
+# Session state can be updated frequently without validation overhead
+session = UserSession(user_id="123", login_time=datetime.now(), last_activity=datetime.now())
+
+# Fast updates in tight loop (no validation)
+for _ in range(10000):
+    session.request_count += 1  # Very fast!
+
 session.permissions = ["read", "write"]
 ```
 
 ### Performance Considerations
 
-Both `Typed` and `MutableTyped` have similar performance characteristics:
-- **Creation time** - Identical validation and conversion
-- **Memory usage** - Same memory footprint
-- **Field access** - Same access speed
-- **Serialization** - Same serialization performance
+**Creation time**: Both `Typed` and `MutableTyped` have identical validation at creation.
 
-The only difference is assignment validation in `MutableTyped`, which adds minimal overhead.
+**After creation**:
+- **Typed** - Cannot modify fields (fastest, most secure)
+- **MutableTyped (default)** - Fast modifications without validation (optimized for performance)
+- **MutableTyped (validate_assignment=True)** - Validated modifications (slower but ensures correctness)
+
+```python
+# Performance comparison
+class TypedCounter(Typed):
+    count: int = 0
+
+class MutableCounter(MutableTyped):
+    count: int = 0
+
+class ValidatedMutableCounter(MutableTyped):
+    model_config = ConfigDict(frozen=False, validate_assignment=True)
+    count: int = 0
+
+# Typed: Cannot modify after creation
+typed = TypedCounter()
+# typed.count = 1  # Error!
+
+# MutableTyped: Fast modifications (no validation)
+mutable = MutableCounter()
+for i in range(1000000):
+    mutable.count = i  # Very fast!
+
+# ValidatedMutableCounter: Validated modifications (slower)
+validated = ValidatedMutableCounter()
+for i in range(1000):
+    validated.count = i  # Slower due to validation
+```
 
 ### Best Practices
 
 1. **Default to Typed** - Use immutable models unless you specifically need mutability
-2. **Use MutableTyped for state** - When objects represent changing state
-3. **Validate assignments** - All `MutableTyped` assignments are validated
-4. **Consider thread safety** - `Typed` is thread-safe, `MutableTyped` requires synchronization
-5. **Use appropriate patterns** - Immutable for functional, mutable for imperative
+2. **Use MutableTyped for state** - When objects represent changing state or frequent updates
+3. **Enable validation when needed** - Set `validate_assignment=True` when data integrity is critical
+4. **Optimize for performance** - Keep default `validate_assignment=False` for tight loops
+5. **Consider thread safety** - `Typed` is thread-safe, `MutableTyped` requires synchronization
+6. **Validate at boundaries** - Validate input at creation time, skip validation for internal updates
+7. **Use appropriate patterns** - Immutable for functional/configuration, mutable for state/performance
 
 ## Next Steps
 
