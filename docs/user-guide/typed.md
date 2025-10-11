@@ -630,6 +630,593 @@ except ValidationError as e:
     # Pydantic provides detailed location information for nested errors
 ```
 
+## Lifecycle Hooks
+
+Typed provides four lifecycle hooks that allow you to customize initialization and validation behavior:
+
+### Hook Overview
+
+The hooks execute in this order:
+
+1. **`pre_initialize` (classmethod)**: Set up derived fields before validation
+2. **`pre_validate` (classmethod)**: Validate and normalize input data
+3. **Pydantic field validation**: Type conversion and constraint validation
+4. **`post_initialize` (instance method)**: Perform side effects after validation
+5. **`post_validate` (instance method)**: Validate the completed instance
+
+### pre_initialize Hook
+
+Use `pre_initialize` to set up derived fields that depend on multiple input fields:
+
+```python
+from datetime import datetime
+from typing import Optional
+
+class Order(Typed):
+    subtotal: float
+    tax_rate: float = 0.1
+    total: Optional[float] = None
+    order_date: Optional[str] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        # Compute total from subtotal and tax_rate
+        if 'subtotal' in data:
+            subtotal = float(data['subtotal'])
+            tax_rate = float(data.get('tax_rate', 0.1))
+            data['total'] = subtotal * (1 + tax_rate)
+
+        # Set order date if not provided
+        if data.get('order_date') is None:
+            data['order_date'] = datetime.now().isoformat()
+
+order = Order(subtotal=100.0)
+assert order.total == 110.0
+assert order.order_date is not None
+```
+
+Key features:
+- Called after default values are set
+- Can modify the input data dictionary
+- Ideal for computing derived fields
+- Parent class hooks are called automatically (no need for super())
+
+### pre_validate Hook
+
+Use `pre_validate` to normalize and validate input data:
+
+```python
+class User(Typed):
+    first_name: str
+    last_name: str
+    email: str
+    
+    full_name: Optional[str] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        # Compute full_name in pre_initialize
+        if 'first_name' in data and 'last_name' in data:
+            data['full_name'] = f"{data['first_name']} {data['last_name']}"
+
+    @classmethod
+    def pre_validate(cls, data: Dict) -> None:
+        # Normalize and validate in pre_validate
+        if 'email' in data:
+            data['email'] = data['email'].lower().strip()
+            if '@' not in data['email']:
+                raise ValueError("Invalid email format")
+        
+        if 'first_name' in data:
+            data['first_name'] = data['first_name'].strip().title()
+        
+        if 'last_name' in data:
+            data['last_name'] = data['last_name'].strip().title()
+
+user = User(
+    first_name="john",
+    last_name="doe",
+    email="  JOHN@EXAMPLE.COM  "
+)
+assert user.first_name == "John"
+assert user.last_name == "Doe"
+assert user.email == "john@example.com"
+assert user.full_name == "john doe"  # Uses raw values before normalization
+```
+
+Key features:
+- Called after `pre_initialize`
+- Can modify the input data dictionary
+- Ideal for normalization and validation
+- Parent class hooks are called automatically
+
+### post_initialize Hook
+
+Use `post_initialize` for side effects after validation:
+
+```python
+class User(Typed):
+    name: str
+    email: str
+    created_at: Optional[str] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        if data.get('created_at') is None:
+            data['created_at'] = datetime.now().isoformat()
+
+    def post_initialize(self) -> None:
+        # Log user creation (side effect only)
+        print(f"User {self.name} created at {self.created_at}")
+
+user = User(name="John Doe", email="john@example.com")
+# Output: User John Doe created at 2024-01-01T12:00:00
+```
+
+Key features:
+- Called after Pydantic validation
+- Works on the validated instance (read-only)
+- Cannot modify frozen instance
+- Ideal for logging, notifications, external system integration
+- Parent class hooks are called automatically
+
+### post_validate Hook
+
+Use `post_validate` for cross-field validation on the completed instance:
+
+```python
+class DateRange(Typed):
+    start_date: str
+    end_date: str
+
+    def post_validate(self) -> None:
+        from datetime import datetime
+        start = datetime.fromisoformat(self.start_date)
+        end = datetime.fromisoformat(self.end_date)
+        if start >= end:
+            raise ValueError("start_date must be before end_date")
+
+# Valid range
+date_range = DateRange(start_date="2024-01-01", end_date="2024-01-10")
+
+# Invalid range raises error
+try:
+    DateRange(start_date="2024-01-10", end_date="2024-01-01")
+except ValueError as e:
+    print(e)  # "start_date must be before end_date"
+```
+
+Key features:
+- Called after `post_initialize`
+- Works on the validated instance (read-only)
+- Cannot modify frozen instance
+- Ideal for validating relationships between fields
+- Parent class hooks are called automatically
+
+### Complete Lifecycle Example
+
+Here's a complete example showing all four hooks working together:
+
+```python
+from datetime import datetime
+from typing import Optional
+
+class Invoice(Typed):
+    items: List[str]
+    subtotal: float
+    tax_rate: float = 0.08
+    
+    # Derived fields
+    tax_amount: Optional[float] = None
+    total: Optional[float] = None
+    invoice_date: Optional[str] = None
+    invoice_id: Optional[str] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        """Set up derived fields before validation."""
+        if 'subtotal' in data:
+            subtotal = float(data['subtotal'])
+            tax_rate = float(data.get('tax_rate', 0.08))
+            data['tax_amount'] = round(subtotal * tax_rate, 2)
+            data['total'] = round(subtotal + data['tax_amount'], 2)
+        
+        if data.get('invoice_date') is None:
+            data['invoice_date'] = datetime.now().isoformat()
+
+    @classmethod
+    def pre_validate(cls, data: Dict) -> None:
+        """Normalize and validate input data."""
+        # Generate invoice ID
+        if data.get('invoice_id') is None:
+            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+            data['invoice_id'] = f"INV-{timestamp}"
+        
+        # Validate subtotal is positive
+        if 'subtotal' in data and data['subtotal'] <= 0:
+            raise ValueError("Subtotal must be positive")
+
+    def post_initialize(self) -> None:
+        """Perform side effects after validation."""
+        print(f"Invoice {self.invoice_id} created for ${self.total:.2f}")
+
+    def post_validate(self) -> None:
+        """Validate the completed instance."""
+        if not self.items:
+            raise ValueError("Invoice must have at least one item")
+        
+        # Verify total calculation
+        expected_total = self.subtotal + self.tax_amount
+        if abs(self.total - expected_total) > 0.01:
+            raise ValueError(f"Total mismatch: expected {expected_total}, got {self.total}")
+
+# Create invoice - all hooks execute automatically
+invoice = Invoice(
+    items=["Widget A", "Widget B"],
+    subtotal=100.00
+)
+
+assert invoice.tax_amount == 8.00
+assert invoice.total == 108.00
+assert invoice.invoice_id.startswith("INV-")
+assert invoice.invoice_date is not None
+# Output: Invoice INV-20240101120000 created for $108.00
+```
+
+### Inheritance and Hook Execution
+
+Parent class hooks are called automatically in method resolution order (MRO), from base to derived. This means you **don't need to call `super()`** in your hooks - the framework handles it automatically.
+
+#### Basic Inheritance
+
+```python
+class BaseModel(Typed):
+    name: str
+    base_info: Optional[str] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        if 'name' in data:
+            data['base_info'] = f"Base: {data['name']}"
+
+class ExtendedModel(BaseModel):
+    age: int
+    extended_info: Optional[str] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        # Parent's pre_initialize is called automatically before this
+        if 'name' in data and 'age' in data:
+            data['extended_info'] = f"Extended: {data['name']} is {data['age']} years old"
+
+model = ExtendedModel(name="John", age=30)
+assert model.base_info == "Base: John"  # From parent's pre_initialize
+assert model.extended_info == "Extended: John is 30 years old"  # From child's pre_initialize
+```
+
+#### Three-Level Inheritance with Mixed Hooks
+
+This example shows how hooks at different levels of inheritance work together:
+
+```python
+class Level1(Typed):
+    """Base class with pre_initialize and post_initialize."""
+    name: str
+    level1_computed: Optional[str] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        """Called first - sets up base computed field."""
+        if 'name' in data:
+            data['level1_computed'] = f"L1: {data['name']}"
+
+    def post_initialize(self) -> None:
+        """Called after validation - performs side effects."""
+        print(f"Level1 initialized: {self.level1_computed}")
+
+class Level2(Level1):
+    """Middle class with pre_validate."""
+    value: int
+    level2_normalized: Optional[str] = None
+
+    @classmethod
+    def pre_validate(cls, data: Dict) -> None:
+        """Called after pre_initialize - normalizes data."""
+        if 'name' in data:
+            data['level2_normalized'] = data['name'].upper()
+
+class Level3(Level2):
+    """Final class with post_validate."""
+    extra: str
+
+    def post_validate(self) -> None:
+        """Called last - validates the complete instance."""
+        if not self.level1_computed or not self.level2_normalized:
+            raise ValueError("Missing computed fields")
+        print(f"Level3 validated: {self.level2_normalized}")
+
+# Execution order:
+# 1. Default values set
+# 2. Level1.pre_initialize() - sets level1_computed
+# 3. Level2.pre_validate() - sets level2_normalized  
+# 4. Pydantic validation
+# 5. Level1.post_initialize() - prints message
+# 6. Level3.post_validate() - validates and prints message
+
+model = Level3(name="test", value=42, extra="hello")
+# Output:
+# Level1 initialized: L1: test
+# Level3 validated: TEST
+
+assert model.level1_computed == "L1: test"
+assert model.level2_normalized == "TEST"
+```
+
+#### Multiple Hooks at Different Levels
+
+When different classes in the hierarchy define different hooks:
+
+```python
+class A(Typed):
+    """Has pre_initialize only."""
+    field_a: str
+    a_data: Optional[str] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        if 'field_a' in data:
+            data['a_data'] = f"A: {data['field_a']}"
+
+class B(A):
+    """Has pre_initialize only."""
+    field_b: str
+    b_data: Optional[str] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        if 'field_b' in data:
+            data['b_data'] = f"B: {data['field_b']}"
+
+class C(B):
+    """Has post_initialize only."""
+    field_c: str
+
+    def post_initialize(self) -> None:
+        print(f"Created C with: {self.a_data}, {self.b_data}")
+
+# When creating C, the execution order is:
+# 1. Default values
+# 2. A.pre_initialize() - sets a_data
+# 3. B.pre_initialize() - sets b_data
+# 4. Pydantic validation
+# 5. C.post_initialize() - prints message
+
+model = C(field_a="x", field_b="y", field_c="z")
+assert model.a_data == "A: x"
+assert model.b_data == "B: y"
+```
+
+#### Parent and Child with Same Hook
+
+When both parent and child define the same hook, both are called in order:
+
+```python
+class Parent(Typed):
+    name: str
+    parent_field: Optional[str] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        if 'name' in data:
+            data['parent_field'] = f"Parent: {data['name']}"
+
+class Child(Parent):
+    age: int
+    child_field: Optional[str] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        # Parent's hook is called first automatically
+        if 'name' in data:
+            data['child_field'] = f"Child: {data['name']}"
+
+model = Child(name="john", age=30)
+
+# Both hooks run - parent first, then child
+assert model.parent_field == "Parent: john"
+assert model.child_field == "Child: john"
+```
+
+#### Important Notes on Inheritance
+
+**Automatic Hook Execution:**
+- All parent hooks are called automatically in MRO order (base to derived)
+- You **don't need** to call `super().pre_initialize(data)` or similar
+- Hooks are only called once per class in the hierarchy
+
+**Hook Execution Order:**
+1. **Pre-hooks** (classmethod): Called on raw input dict, from base to derived
+   - All `pre_initialize` hooks (base → derived)
+   - All `pre_validate` hooks (base → derived)
+2. **Pydantic validation**: Type conversion and field validation
+3. **Post-hooks** (instance method): Called on validated instance, from base to derived
+   - All `post_initialize` hooks (base → derived)
+   - All `post_validate` hooks (base → derived)
+
+**Overriding Behavior:**
+If you need custom control over hook execution order, override `pre_set_validate_inputs()` or `post_set_validate_inputs()`:
+
+```python
+class CustomOrder(Typed):
+    name: str
+
+    @classmethod
+    def pre_set_validate_inputs(cls, data: Dict) -> Dict:
+        """Override to customize pre-hook execution."""
+        data = AttrDict(data)
+        cls._set_default_values(data)
+        
+        # Custom order: skip parent hooks if needed
+        cls.pre_initialize(data)
+        cls.pre_validate(data)
+        
+        return data.to_dict()
+```
+
+**Key Differences from Manual super() Calls:**
+- ✅ **Automatic**: Parent hooks called even if you forget
+- ✅ **Complete**: All ancestors' hooks are called, not just immediate parent
+- ✅ **Correct Order**: Guaranteed base-to-derived execution
+- ❌ **Less Control**: Can't easily skip parent hooks (override `pre_set_validate_inputs` if needed)
+
+### Hook Best Practices
+
+1. **Use pre_initialize for derived fields** - Compute fields that depend on multiple inputs
+2. **Use pre_validate for normalization and validation** - Clean and validate input data
+3. **Use post_initialize for side effects** - Logging, notifications, external system integration
+4. **Use post_validate for cross-field validation** - Validate relationships between fields
+5. **Remember instance is frozen** - post_initialize and post_validate cannot modify the instance
+6. **Leverage automatic inheritance** - Parent hooks are called automatically
+
+### MutableTyped and Hooks
+
+`MutableTyped` is a variant of `Typed` that allows field modification after creation. It has two key differences:
+
+1. **`frozen=False`**: Fields can be modified after instantiation
+2. **`validate_assignment=True`**: Each assignment triggers full validation (including hooks!)
+
+#### Basic Usage
+
+```python
+from morphic.typed import MutableTyped
+
+class User(MutableTyped):
+    name: str
+    age: int
+    active: bool = True
+
+# Create instance
+user = User(name="John", age=30)
+
+# Can modify fields (unlike regular Typed)
+user.name = "Jane"
+user.age = 25
+print(user.name)  # "Jane"
+
+# Validation still works
+try:
+    user.age = "not a number"  # ValidationError!
+except ValidationError as e:
+    print(e)
+```
+
+#### Hooks with MutableTyped
+
+**Important**: Use pre-hooks for derived fields, not post-hooks. Post-hooks should only perform side effects.
+
+```python
+class UserWithScore(MutableTyped):
+    name: str
+    age: int
+    score: Optional[int] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        # ✅ CORRECT: Set derived fields in pre_initialize
+        if 'age' in data:
+            data['score'] = data['age'] * 10
+
+    def post_initialize(self) -> None:
+        # ✅ CORRECT: Use post hooks for side effects only
+        print(f"User {self.name} created with score {self.score}")
+
+user = UserWithScore(name="John", age=30)
+print(user.score)  # 300
+```
+
+#### Assignment Triggers Full Validation
+
+**Key Behavior**: When you assign to a field in `MutableTyped`, the full validation pipeline runs, including all pre-hooks. This means derived fields are automatically recomputed:
+
+```python
+class Product(MutableTyped):
+    price: float
+    tax_rate: float = 0.1
+    total: Optional[float] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        if 'price' in data:
+            tax_rate = data.get('tax_rate', 0.1)
+            data['total'] = data['price'] * (1 + tax_rate)
+
+product = Product(price=100.0)
+print(product.total)  # 110.0
+
+# Assignment triggers pre_initialize again!
+product.price = 200.0
+print(product.total)  # 220.0 (automatically recomputed!)
+```
+
+#### Why Post-Hooks Can't Modify Instance
+
+**Don't** try to modify the instance in post-hooks, even in `MutableTyped`:
+
+```python
+# ❌ WRONG - Don't do this!
+class BadExample(MutableTyped):
+    value: int
+    doubled: Optional[int] = None
+
+    def post_initialize(self) -> None:
+        # This causes infinite recursion!
+        # Assignment triggers validation → calls post_initialize → assignment...
+        self.doubled = self.value * 2  # ❌ BAD!
+
+# ✅ CORRECT - Use pre_initialize instead
+class GoodExample(MutableTyped):
+    value: int
+    doubled: Optional[int] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        if 'value' in data:
+            data['doubled'] = data['value'] * 2  # ✅ GOOD!
+```
+
+#### When to Use MutableTyped vs Typed
+
+**Use `Typed` (frozen) when:**
+- Immutability is desired for thread safety
+- Data should not change after validation
+- Working with configuration or settings
+- Building data transfer objects (DTOs)
+
+**Use `MutableTyped` when:**
+- Need to modify fields after creation
+- Building state machines or mutable models
+- Working with ORM-like patterns
+- Want automatic recomputation of derived fields on assignment
+
+#### Performance Considerations
+
+`MutableTyped` has higher overhead:
+- Each assignment triggers full validation
+- Pre-hooks run on every assignment
+- More memory overhead due to validation machinery
+
+```python
+# For bulk updates, consider creating new instance instead
+old_product = Product(price=100.0, tax_rate=0.1)
+
+# Instead of multiple assignments (triggers validation each time):
+# product.price = 200.0
+# product.tax_rate = 0.15  # Each triggers validation
+
+# Better: Create new instance
+new_product = Product(price=200.0, tax_rate=0.15)  # One validation cycle
+```
+
 ## Performance and Best Practices
 
 ### Pydantic Performance Characteristics

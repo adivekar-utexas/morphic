@@ -363,7 +363,7 @@ class TestValidation:
 
     def test_automatic_validation(self):
         """Test that Pydantic validates automatically during construction."""
-        # Validation happens automatically, no need to call validate()
+        # Validation happens automatically, no need to call pre_validate()
         model = SimpleTyped(name="John", age=30)
         assert model.name == "John"
         assert model.age == 30
@@ -522,10 +522,10 @@ class TestIntegration:
 
     def test_nested_model_validation(self):
         """Test validation with nested models."""
-        # Create nested model that should validate automatically with Pydantic
+        # Create nested model that should pre_validate automatically with Pydantic
         user_data = {"name": "John", "age": 30}
         user = SimpleTyped.model_validate(user_data)
-        # Pydantic validates automatically, no need to call validate()
+        # Pydantic validates automatically, no need to call pre_validate()
 
         nested = NestedTyped(user=user)
         # Pydantic validates automatically during construction
@@ -895,7 +895,7 @@ class TestDefaultValueValidation:
     def test_invalid_default_values_behavior(self):
         """Test Pydantic's behavior with invalid default values."""
 
-        # Pydantic doesn't validate defaults at class definition time
+        # Pydantic doesn't pre_validate defaults at class definition time
         # Instead, validation happens during instantiation
         class InvalidIntDefaultModel(Typed):
             age: int = "not_a_number"  # This will cause error during instantiation
@@ -1406,17 +1406,17 @@ class TestNestedTypedConversion:
 
 
 class TestValidateInputs:
-    """Comprehensive tests for validate method."""
+    """Comprehensive tests for pre_validate method."""
 
     def test_basic_validate_inputs_override(self):
-        """Test basic validate method override with data mutation."""
+        """Test basic pre_validate method override with data mutation."""
 
         class NormalizingModel(Typed):
             name: str
             email: str
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 # Normalize name to title case
                 if "name" in data:
                     data["name"] = data["name"].strip().title()
@@ -1431,14 +1431,14 @@ class TestValidateInputs:
         assert model.email == "john@example.com"
 
     def test_validate_inputs_with_model_validate(self):
-        """Test that validate works with model_validate."""
+        """Test that pre_validate works with model_validate."""
 
         class ValidatingModel(Typed):
             username: str
             age: int
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 # Normalize username
                 if "username" in data:
                     data["username"] = data["username"].lower()
@@ -1459,7 +1459,7 @@ class TestValidateInputs:
             ValidatingModel.model_validate({"username": "test", "age": 150})
 
     def test_validate_inputs_computed_fields(self):
-        """Test validate for computing derived fields."""
+        """Test pre_validate for computing derived fields."""
 
         class ProductModel(Typed):
             name: str
@@ -1468,9 +1468,9 @@ class TestValidateInputs:
             total_price: Optional[float] = None
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
-                # Compute total price if not provided
-                if "total_price" not in data and "price" in data:
+            def pre_validate(cls, data: Dict) -> NoReturn:
+                # Compute total price if not provided (check for None since defaults are set)
+                if data.get("total_price") is None and "price" in data:
                     price = float(data["price"])
                     tax_rate = float(data.get("tax_rate", 0.1))
                     data["total_price"] = price * (1 + tax_rate)
@@ -1493,7 +1493,7 @@ class TestValidateInputs:
         assert product3.total_price == 125  # Not computed
 
     def test_validate_inputs_conditional_logic(self):
-        """Test validate with conditional logic based on field values."""
+        """Test pre_validate with conditional logic based on field values."""
 
         class APIRequestModel(Typed):
             method: str
@@ -1502,13 +1502,13 @@ class TestValidateInputs:
             body: Optional[str] = None
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 # Normalize HTTP method
                 if "method" in data:
                     data["method"] = data["method"].upper()
 
-                # Initialize headers if not provided
-                if "headers" not in data:
+                # Initialize headers if None (defaults are now set before this runs)
+                if data.get("headers") is None:
                     data["headers"] = {}
 
                 # For POST/PUT requests with body, ensure Content-Type is set
@@ -1538,7 +1538,7 @@ class TestValidateInputs:
             APIRequestModel(method="GET", url="ftp://invalid.com")
 
     def test_validate_inputs_with_defaults(self):
-        """Test validate interaction with default values."""
+        """Test pre_validate interaction with default values."""
 
         class ConfigModel(Typed):
             host: str = "localhost"
@@ -1547,9 +1547,9 @@ class TestValidateInputs:
             full_url: Optional[str] = None
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
-                # Compute full URL if not provided
-                if "full_url" not in data:
+            def pre_validate(cls, data: Dict) -> NoReturn:
+                # Compute full URL if not provided (check for None since defaults are set)
+                if data.get("full_url") is None:
                     host = data.get("host", "localhost")
                     port = data.get("port", 8080)
                     data["full_url"] = f"http://{host}:{port}"
@@ -1575,14 +1575,14 @@ class TestValidateInputs:
             ConfigModel(port=70000)
 
     def test_validate_inputs_error_handling(self):
-        """Test error handling in validate."""
+        """Test error handling in pre_validate."""
 
         class StrictValidationModel(Typed):
             username: str
             password: str
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 # Username validation
                 username = data.get("username", "")
                 if username:
@@ -1620,14 +1620,14 @@ class TestValidateInputs:
             StrictValidationModel(username="user123", password="password")
 
     def test_validate_inputs_with_nested_types(self):
-        """Test validate with nested Typed objects."""
+        """Test pre_validate with nested Typed objects."""
 
         class ContactInfo(Typed):
             email: str
             phone: Optional[str] = None
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 # Normalize email
                 if "email" in data:
                     data["email"] = data["email"].lower()
@@ -1647,7 +1647,7 @@ class TestValidateInputs:
             contact: ContactInfo
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 # Normalize name
                 if "name" in data:
                     data["name"] = data["name"].strip().title()
@@ -1665,7 +1665,7 @@ class TestValidateInputs:
             PersonModel(name="John", contact={"email": "john@example.com", "phone": "123"})
 
     def test_validate_inputs_with_lists_and_dicts(self):
-        """Test validate with complex data structures."""
+        """Test pre_validate with complex data structures."""
 
         class ProjectModel(Typed):
             name: str
@@ -1674,9 +1674,9 @@ class TestValidateInputs:
             extra_field: Optional[str] = None
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
-                # Add computed field based on raw name first
-                if "name" in data and "extra_field" not in data:
+            def pre_validate(cls, data: Dict) -> NoReturn:
+                # Add computed field based on raw name first (check for None since defaults are set)
+                if "name" in data and data.get("extra_field") is None:
                     data["extra_field"] = f"Project: {data['name']}"
 
                 # Normalize project name
@@ -1700,7 +1700,7 @@ class TestValidateInputs:
         assert project.name == "My Project"
         assert project.tags == ["python", "web", "api"]
         assert project.extra_field == "Project:   my project  "  # Raw value before normalization
-        assert project.metadata == {}  # Default factory dict
+        assert "created_at" in project.metadata  # Default factory dict with timestamp added
 
         # Test with existing metadata
         project2 = ProjectModel(name="another project", metadata={"version": "1.0"})
@@ -1712,14 +1712,14 @@ class TestValidateInputs:
         assert project3.metadata["created_at"] == "2024-01-01"  # Not overridden
 
     def test_validate_inputs_execution_order(self):
-        """Test that validate is called at the right time in the validation process."""
+        """Test that pre_validate is called at the right time in the validation process."""
 
         class OrderTestModel(Typed):
             value: int
             transformed_value: Optional[int] = None
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 # This should be called before Pydantic field validation
                 # So we can work with raw input values
                 if "value" in data:
@@ -1741,13 +1741,13 @@ class TestValidateInputs:
         assert model2.transformed_value == 105
 
     def test_validate_inputs_inheritance(self):
-        """Test validate with class inheritance."""
+        """Test pre_validate with class inheritance."""
 
         class BaseModel(Typed):
             name: str
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 # Base validation - normalize name
                 if "name" in data:
                     data["name"] = data["name"].strip().title()
@@ -1757,9 +1757,9 @@ class TestValidateInputs:
             age: int
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 # Call parent validation first
-                super().validate(data)
+                super().pre_validate(data)
 
                 # Additional validation
                 if "email" in data:
@@ -1781,12 +1781,12 @@ class TestValidateInputs:
             ExtendedModel(name="John", email="john@example.com", age=-5)
 
     def test_validate_inputs_no_override(self):
-        """Test that models work normally when validate is not overridden."""
+        """Test that models work normally when pre_validate is not overridden."""
 
         class SimpleModel(Typed):
             name: str
             value: int
-            # No validate override
+            # No pre_validate override
 
         # Should work normally without any custom validation
         model = SimpleModel(name="test", value=42)
@@ -1810,7 +1810,7 @@ class TestInitialize:
             timestamp: Optional[str] = None
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 # Set computed fields during validation phase
                 if "name" in data:
                     data["computed_field"] = f"Computed: {data['name'].upper()}"
@@ -1839,7 +1839,7 @@ class TestInitialize:
             formatted_value: Optional[str] = None
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 # Set derived fields during validation
                 if "value" in data:
                     value = int(data["value"]) if isinstance(data["value"], str) else data["value"]
@@ -1870,7 +1870,7 @@ class TestInitialize:
             full_name: Optional[str] = None
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 if "name" in data:
                     data["full_name"] = f"Mr./Ms. {data['name']}"
 
@@ -1882,7 +1882,7 @@ class TestInitialize:
             container_info: Optional[str] = None
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 if "user" in data and isinstance(data["user"], dict):
                     # Create the nested object first
                     nested = NestedInitializer(**data["user"])
@@ -1905,7 +1905,7 @@ class TestInitialize:
             display_name: Optional[str] = None
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 if "name" in data:
                     data["display_name"] = f"Item: {data['name'].title()}"
 
@@ -1917,7 +1917,7 @@ class TestInitialize:
             summary: Optional[str] = None
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 if "items" in data:
                     data["summary"] = f"Collection with {len(data['items'])} items"
 
@@ -1943,7 +1943,7 @@ class TestInitialize:
             error_message: Optional[str] = None
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 # Set processing time based on priority
                 if "priority" in data:
                     data["processing_time"] = data["priority"] * 100
@@ -1974,7 +1974,7 @@ class TestInitialize:
             metadata: Optional[Dict[str, str]] = None
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 if "id" in data:
                     # Simulate external dependency
                     data["cache_key"] = f"cache_{data['id']}_{hash(data['id']) % 1000}"
@@ -2004,7 +2004,7 @@ class TestInitialize:
             error: Optional[str] = None
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 if "value" in data:
                     try:
                         # Simulate processing that might fail
@@ -2037,7 +2037,7 @@ class TestInitialize:
             initialization_order: List[str] = Field(default_factory=list)
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 # This should be called first
                 # Handle PydanticUndefined properly
                 from pydantic_core import PydanticUndefined
@@ -2068,7 +2068,7 @@ class TestInitialize:
             base_info: Optional[str] = None
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 if "name" in data:
                     data["base_info"] = f"Base: {data['name']}"
 
@@ -2080,9 +2080,9 @@ class TestInitialize:
             extended_info: Optional[str] = None
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 # Call parent validation
-                super().validate(data)
+                super().pre_validate(data)
                 # Add extended validation
                 if "name" in data and "age" in data:
                     data["extended_info"] = f"Extended: {data['name']} is {data['age']} years old"
@@ -2108,7 +2108,7 @@ class TestInitialize:
         assert model.value == 42
 
     def test_initialize_vs_validate_differences(self):
-        """Test the key differences between initialize and validate methods."""
+        """Test the key differences between initialize and pre_validate methods."""
 
         class ComparisonModel(Typed):
             raw_value: str
@@ -2116,8 +2116,8 @@ class TestInitialize:
             computed_value: Optional[str] = None
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
-                # validate works on raw dict data before model creation
+            def pre_validate(cls, data: Dict) -> NoReturn:
+                # pre_validate works on raw dict data before model creation
                 if "raw_value" in data:
                     data["raw_value"] = data["raw_value"].strip().lower()
                     # Can modify the input data
@@ -2127,12 +2127,12 @@ class TestInitialize:
 
             def initialize(self) -> NoReturn:
                 # initialize works on the model instance after validation
-                # Note: Can't modify frozen instance, so computation is done in validate
+                # Note: Can't modify frozen instance, so computation is done in pre_validate
                 pass
 
         model = ComparisonModel(raw_value="  HELLO  ")
 
-        # validate modified the input data
+        # pre_validate modified the input data
         assert model.raw_value == "hello"  # stripped and lowercased
         assert model.processed_value == "Processed: hello"
 
@@ -2147,7 +2147,7 @@ class TestInitialize:
             factory_info: Optional[str] = None
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 if "name" in data:
                     data["factory_info"] = f"Created via factory: {data['name']}"
 
@@ -2167,7 +2167,7 @@ class TestInitialize:
             path: Optional[str] = None
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 if "level" in data:
                     data["path"] = f"Level_{data['level']}"
 
@@ -2179,7 +2179,7 @@ class TestInitialize:
             container_path: Optional[str] = None
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 if "items" in data:
                     # Create items to get their paths
                     items = [DeepNestedInitializer(**item) for item in data["items"]]
@@ -2194,7 +2194,7 @@ class TestInitialize:
             top_level_info: Optional[str] = None
 
             @classmethod
-            def validate(cls, data: Dict) -> NoReturn:
+            def pre_validate(cls, data: Dict) -> NoReturn:
                 if "containers" in data:
                     # Create containers to get their paths
                     containers = [ContainerInitializer(**container) for container in data["containers"]]
@@ -2218,7 +2218,7 @@ class TestInitialize:
 
 
 class TestValidateCall:
-    """Comprehensive tests for validate decorator."""
+    """Comprehensive tests for pre_validate decorator."""
 
     def test_basic_validate_functionality(self):
         """Test basic validate functionality with type conversion."""
@@ -2726,6 +2726,710 @@ class TestValidateCall:
             bad_complex_nested()
 
 
+class TestLifecycleHooks:
+    """Comprehensive tests for lifecycle hooks: pre_initialize, pre_validate, post_initialize, post_validate."""
+
+    def test_pre_initialize_only(self):
+        """Test class with only pre_initialize hook."""
+
+        class ModelWithPreInit(Typed):
+            name: str
+            computed: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "name" in data:
+                    data["computed"] = f"Computed: {data['name']}"
+
+        model = ModelWithPreInit(name="test")
+        assert model.name == "test"
+        assert model.computed == "Computed: test"
+
+    def test_pre_validate_only(self):
+        """Test class with only pre_validate hook."""
+
+        class ModelWithPreValidate(Typed):
+            name: str
+            email: str
+
+            @classmethod
+            def pre_validate(cls, data: Dict) -> NoReturn:
+                if "name" in data:
+                    data["name"] = data["name"].strip().title()
+                if "email" in data:
+                    data["email"] = data["email"].lower()
+
+        model = ModelWithPreValidate(name="  john doe  ", email="JOHN@EXAMPLE.COM")
+        assert model.name == "John Doe"
+        assert model.email == "john@example.com"
+
+    def test_post_initialize_only(self):
+        """Test class with only post_initialize hook."""
+
+        call_log = []
+
+        class ModelWithPostInit(Typed):
+            name: str
+
+            def post_initialize(self) -> NoReturn:
+                call_log.append(f"post_initialize: {self.name}")
+
+        model = ModelWithPostInit(name="test")
+        assert model.name == "test"
+        assert "post_initialize: test" in call_log
+
+    def test_post_validate_only(self):
+        """Test class with only post_validate hook."""
+
+        class ModelWithPostValidate(Typed):
+            start: int
+            end: int
+
+            def post_validate(self) -> NoReturn:
+                if self.start >= self.end:
+                    raise ValueError("start must be less than end")
+
+        # Valid case
+        model = ModelWithPostValidate(start=1, end=10)
+        assert model.start == 1
+        assert model.end == 10
+
+        # Invalid case
+        with pytest.raises(ValueError, match="start must be less than end"):
+            ModelWithPostValidate(start=10, end=1)
+
+    def test_pre_initialize_and_pre_validate(self):
+        """Test class with both pre_initialize and pre_validate hooks."""
+
+        class ModelWithBothPre(Typed):
+            first_name: str
+            last_name: str
+            full_name: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                # Compute full_name from raw values
+                if "first_name" in data and "last_name" in data:
+                    data["full_name"] = f"{data['first_name']} {data['last_name']}"
+
+            @classmethod
+            def pre_validate(cls, data: Dict) -> NoReturn:
+                # Normalize names
+                if "first_name" in data:
+                    data["first_name"] = data["first_name"].strip().title()
+                if "last_name" in data:
+                    data["last_name"] = data["last_name"].strip().title()
+
+        model = ModelWithBothPre(first_name="john", last_name="doe")
+        assert model.first_name == "John"
+        assert model.last_name == "Doe"
+        assert model.full_name == "john doe"  # Uses raw values from pre_initialize
+
+    def test_post_initialize_and_post_validate(self):
+        """Test class with both post_initialize and post_validate hooks."""
+
+        call_log = []
+
+        class ModelWithBothPost(Typed):
+            value: int
+            max_value: int = 100
+
+            def post_initialize(self) -> NoReturn:
+                call_log.append(f"post_initialize: value={self.value}")
+
+            def post_validate(self) -> NoReturn:
+                if self.value > self.max_value:
+                    raise ValueError(f"value {self.value} exceeds max {self.max_value}")
+                call_log.append(f"post_validate: value={self.value}")
+
+        model = ModelWithBothPost(value=50)
+        assert model.value == 50
+        assert "post_initialize: value=50" in call_log
+        assert "post_validate: value=50" in call_log
+        # Verify order: post_initialize comes before post_validate
+        init_idx = call_log.index("post_initialize: value=50")
+        validate_idx = call_log.index("post_validate: value=50")
+        assert init_idx < validate_idx
+
+        # Test validation failure
+        with pytest.raises(ValueError, match="value 150 exceeds max 100"):
+            ModelWithBothPost(value=150)
+
+    def test_all_four_hooks(self):
+        """Test class with all four lifecycle hooks."""
+
+        call_log = []
+
+        class ModelWithAllHooks(Typed):
+            name: str
+            computed: Optional[str] = None
+            normalized: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                call_log.append("pre_initialize")
+                if "name" in data:
+                    data["computed"] = f"Computed: {data['name']}"
+
+            @classmethod
+            def pre_validate(cls, data: Dict) -> NoReturn:
+                call_log.append("pre_validate")
+                if "name" in data:
+                    data["normalized"] = data["name"].strip().title()
+
+            def post_initialize(self) -> NoReturn:
+                call_log.append("post_initialize")
+
+            def post_validate(self) -> NoReturn:
+                call_log.append("post_validate")
+                if not self.computed:
+                    raise ValueError("computed field is required")
+
+        call_log.clear()
+        model = ModelWithAllHooks(name="  test  ")
+
+        # Verify execution order
+        assert call_log == ["pre_initialize", "pre_validate", "post_initialize", "post_validate"]
+        assert model.computed == "Computed:   test  "  # Raw value
+        assert model.normalized == "Test"  # Normalized value
+
+    def test_inheritance_parent_pre_initialize_child_pre_validate(self):
+        """Test inheritance where parent has pre_initialize, child has pre_validate."""
+
+        class Parent(Typed):
+            name: str
+            parent_computed: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "name" in data:
+                    data["parent_computed"] = f"Parent: {data['name']}"
+
+        class Child(Parent):
+            age: int
+            child_normalized: Optional[str] = None
+
+            @classmethod
+            def pre_validate(cls, data: Dict) -> NoReturn:
+                if "name" in data:
+                    data["child_normalized"] = data["name"].upper()
+
+        model = Child(name="john", age=30)
+        assert model.parent_computed == "Parent: john"  # From parent's pre_initialize
+        assert model.child_normalized == "JOHN"  # From child's pre_validate
+
+    def test_inheritance_parent_post_initialize_child_post_validate(self):
+        """Test inheritance where parent has post_initialize, child has post_validate."""
+
+        call_log = []
+
+        class Parent(Typed):
+            name: str
+
+            def post_initialize(self) -> NoReturn:
+                call_log.append(f"Parent post_initialize: {self.name}")
+
+        class Child(Parent):
+            age: int
+
+            def post_validate(self) -> NoReturn:
+                call_log.append(f"Child post_validate: {self.name}, {self.age}")
+                if self.age < 0:
+                    raise ValueError("age must be positive")
+
+        call_log.clear()
+        model = Child(name="john", age=30)
+        assert "Parent post_initialize: john" in call_log
+        assert "Child post_validate: john, 30" in call_log
+
+    def test_three_level_inheritance_mixed_hooks(self):
+        """Test three-level inheritance (A -> B -> C) with different hooks at each level."""
+
+        call_log = []
+
+        class A(Typed):
+            name: str
+            a_computed: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                call_log.append("A.pre_initialize")
+                if "name" in data:
+                    data["a_computed"] = f"A: {data['name']}"
+
+            def post_initialize(self) -> NoReturn:
+                call_log.append("A.post_initialize")
+
+        class B(A):
+            value: int
+            b_computed: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                call_log.append("B.pre_initialize")
+                if "value" in data:
+                    data["b_computed"] = f"B: {data['value']}"
+
+        class C(B):
+            extra: str
+            c_normalized: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                call_log.append("C.pre_initialize")
+                if "extra" in data:
+                    data["c_normalized"] = data["extra"].upper()
+
+            def post_initialize(self) -> NoReturn:
+                call_log.append("C.post_initialize")
+
+        call_log.clear()
+        model = C(name="test", value=42, extra="hello")
+
+        # Verify all hooks were called in correct order
+        assert "A.pre_initialize" in call_log
+        assert "B.pre_initialize" in call_log
+        assert "C.pre_initialize" in call_log
+        assert "A.post_initialize" in call_log
+        assert "C.post_initialize" in call_log
+
+        # Verify pre_initialize hooks are called base-to-derived
+        a_idx = call_log.index("A.pre_initialize")
+        b_idx = call_log.index("B.pre_initialize")
+        c_idx = call_log.index("C.pre_initialize")
+        assert a_idx < b_idx < c_idx
+
+        # Verify post_initialize hooks are called base-to-derived
+        a_post_idx = call_log.index("A.post_initialize")
+        c_post_idx = call_log.index("C.post_initialize")
+        assert a_post_idx < c_post_idx
+
+        # Verify computed fields
+        assert model.a_computed == "A: test"
+        assert model.b_computed == "B: 42"
+        assert model.c_normalized == "HELLO"
+
+    def test_inheritance_only_middle_class_has_hooks(self):
+        """Test inheritance where only the middle class (B) has hooks."""
+
+        call_log = []
+
+        class A(Typed):
+            name: str
+
+        class B(A):
+            value: int
+            b_computed: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                call_log.append("B.pre_initialize")
+                if "value" in data:
+                    data["b_computed"] = f"B: {data['value']}"
+
+            def post_initialize(self) -> NoReturn:
+                call_log.append("B.post_initialize")
+
+        class C(B):
+            extra: str
+
+        call_log.clear()
+        model = C(name="test", value=42, extra="hello")
+
+        # Verify B's hooks were called even though A and C don't define them
+        assert "B.pre_initialize" in call_log
+        assert "B.post_initialize" in call_log
+        assert model.b_computed == "B: 42"
+
+    def test_inheritance_parent_and_child_same_hook(self):
+        """Test inheritance where both parent and child define the same hook."""
+
+        call_log = []
+
+        class Parent(Typed):
+            name: str
+            parent_field: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                call_log.append("Parent.pre_initialize")
+                if "name" in data:
+                    data["parent_field"] = f"Parent: {data['name']}"
+
+        class Child(Parent):
+            age: int
+            child_field: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                call_log.append("Child.pre_initialize")
+                if "name" in data:
+                    data["child_field"] = f"Child: {data['name']}"
+
+        call_log.clear()
+        model = Child(name="john", age=30)
+
+        # Both hooks should be called
+        assert "Parent.pre_initialize" in call_log
+        assert "Child.pre_initialize" in call_log
+
+        # Parent hook is called before child hook
+        parent_idx = call_log.index("Parent.pre_initialize")
+        child_idx = call_log.index("Child.pre_initialize")
+        assert parent_idx < child_idx
+
+        # Both fields should be set
+        assert model.parent_field == "Parent: john"
+        assert model.child_field == "Child: john"
+
+    def test_complex_inheritance_all_four_hooks_different_levels(self):
+        """Test complex inheritance with all four hooks at different levels."""
+
+        call_log = []
+
+        class Level1(Typed):
+            field1: str
+            level1_data: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                call_log.append("Level1.pre_initialize")
+                if "field1" in data:
+                    data["level1_data"] = f"L1: {data['field1']}"
+
+        class Level2(Level1):
+            field2: str
+            level2_data: Optional[str] = None
+
+            @classmethod
+            def pre_validate(cls, data: Dict) -> NoReturn:
+                call_log.append("Level2.pre_validate")
+                if "field2" in data:
+                    data["level2_data"] = data["field2"].upper()
+
+        class Level3(Level2):
+            field3: str
+
+            def post_initialize(self) -> NoReturn:
+                call_log.append("Level3.post_initialize")
+
+        class Level4(Level3):
+            field4: str
+
+            def post_validate(self) -> NoReturn:
+                call_log.append("Level4.post_validate")
+                if not self.level1_data or not self.level2_data:
+                    raise ValueError("Missing computed data")
+
+        call_log.clear()
+        model = Level4(field1="a", field2="b", field3="c", field4="d")
+
+        # Verify execution order
+        expected_order = [
+            "Level1.pre_initialize",
+            "Level2.pre_validate",
+            "Level3.post_initialize",
+            "Level4.post_validate",
+        ]
+        assert call_log == expected_order
+
+        # Verify computed fields
+        assert model.level1_data == "L1: a"
+        assert model.level2_data == "B"
+
+    def test_inheritance_child_overrides_parent_hook(self):
+        """Test that child can override parent's hook without calling super."""
+
+        call_log = []
+
+        class Parent(Typed):
+            name: str
+            computed: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                call_log.append("Parent.pre_initialize")
+                if "name" in data:
+                    data["computed"] = f"Parent: {data['name']}"
+
+        class ChildWithoutOverride(Parent):
+            age: int
+
+        class ChildWithOwnHook(Parent):
+            age: int
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                call_log.append("Child.pre_initialize")
+                # Don't call super - parent hook is still called automatically
+                if "name" in data:
+                    data["computed"] = f"Child: {data['name']}"
+
+        # Test child without override - parent hook is called
+        call_log.clear()
+        model1 = ChildWithoutOverride(name="john", age=30)
+        assert "Parent.pre_initialize" in call_log
+        assert model1.computed == "Parent: john"
+
+        # Test child with own hook - both hooks are called
+        call_log.clear()
+        model2 = ChildWithOwnHook(name="jane", age=25)
+        assert "Parent.pre_initialize" in call_log
+        assert "Child.pre_initialize" in call_log
+        # Child's hook runs after parent's, so it wins
+        assert model2.computed == "Child: jane"
+
+    def test_hook_exception_propagation(self):
+        """Test that exceptions in hooks are properly propagated."""
+
+        class ModelWithPreInitError(Typed):
+            value: int
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if data.get("value", 0) < 0:
+                    raise ValueError("pre_initialize: value must be positive")
+
+        class ModelWithPreValidateError(Typed):
+            value: int
+
+            @classmethod
+            def pre_validate(cls, data: Dict) -> NoReturn:
+                if data.get("value", 0) < 0:
+                    raise ValueError("pre_validate: value must be positive")
+
+        class ModelWithPostValidateError(Typed):
+            value: int
+
+            def post_validate(self) -> NoReturn:
+                if self.value < 0:
+                    raise ValueError("post_validate: value must be positive")
+
+        # Test pre_initialize error
+        with pytest.raises(ValueError, match="pre_initialize: value must be positive"):
+            ModelWithPreInitError(value=-1)
+
+        # Test pre_validate error
+        with pytest.raises(ValueError, match="pre_validate: value must be positive"):
+            ModelWithPreValidateError(value=-1)
+
+        # Test post_validate error
+        with pytest.raises(ValueError, match="post_validate: value must be positive"):
+            ModelWithPostValidateError(value=-1)
+
+    def test_hooks_with_default_values(self):
+        """Test that hooks work correctly with default values."""
+
+        class ModelWithDefaults(Typed):
+            name: str
+            value: int = 10
+            computed: Optional[str] = None
+            normalized: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                # Default values are already set at this point
+                if "value" in data:
+                    data["computed"] = f"Value: {data['value']}"
+
+            @classmethod
+            def pre_validate(cls, data: Dict) -> NoReturn:
+                if "name" in data:
+                    data["normalized"] = data["name"].upper()
+
+        # Test with default value
+        model1 = ModelWithDefaults(name="test")
+        assert model1.value == 10  # Default
+        assert model1.computed == "Value: 10"  # Computed from default
+        assert model1.normalized == "TEST"
+
+        # Test with provided value
+        model2 = ModelWithDefaults(name="test", value=20)
+        assert model2.value == 20
+        assert model2.computed == "Value: 20"
+        assert model2.normalized == "TEST"
+
+    def test_hooks_with_optional_fields(self):
+        """Test hooks with Optional fields that may be None."""
+
+        class ModelWithOptionals(Typed):
+            required: str
+            optional: Optional[str] = None
+            computed: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                # Handle None values correctly
+                opt_val = data.get("optional")
+                if opt_val is not None:
+                    data["computed"] = f"Has optional: {opt_val}"
+                else:
+                    data["computed"] = "No optional"
+
+        # Test with None
+        model1 = ModelWithOptionals(required="test")
+        assert model1.optional is None
+        assert model1.computed == "No optional"
+
+        # Test with value
+        model2 = ModelWithOptionals(required="test", optional="value")
+        assert model2.optional == "value"
+        assert model2.computed == "Has optional: value"
+
+    def test_mutable_typed_with_hooks(self):
+        """Test that hooks work with MutableTyped."""
+
+        call_log = []
+
+        class MutableModelWithHooks(MutableTyped):
+            name: str
+            computed: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "name" in data:
+                    data["computed"] = f"Computed: {data['name']}"
+
+            def post_initialize(self) -> NoReturn:
+                call_log.append(f"Created: {self.name}")
+
+        call_log.clear()
+        model = MutableModelWithHooks(name="test")
+
+        # Hooks should work
+        assert model.computed == "Computed: test"
+        assert "Created: test" in call_log
+
+        # Can still modify fields
+        model.name = "updated"
+        assert model.name == "updated"
+        # Note: computed is not automatically updated when name changes
+
+    def test_mutable_typed_use_pre_hooks_for_derived_fields(self):
+        """Test that derived fields should be set in pre hooks, not post hooks."""
+
+        class MutableWithDerivedFields(MutableTyped):
+            value: int
+            doubled: Optional[int] = None
+            status: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                # Set derived fields in pre_initialize (before instance creation)
+                if "value" in data:
+                    data["doubled"] = data["value"] * 2
+
+            @classmethod
+            def pre_validate(cls, data: Dict) -> NoReturn:
+                # Set computed fields in pre_validate
+                value = data.get("value", 0)
+                if value > 100:
+                    data["status"] = "high"
+                else:
+                    data["status"] = "normal"
+
+        model = MutableWithDerivedFields(value=50)
+
+        # Fields were set by pre hooks
+        assert model.doubled == 100
+        assert model.status == "normal"
+
+        # Test with high value
+        model2 = MutableWithDerivedFields(value=150)
+        assert model2.doubled == 300
+        assert model2.status == "high"
+
+    def test_mutable_typed_post_hooks_for_side_effects_only(self):
+        """Test that post hooks in MutableTyped should only perform side effects, not modify instance."""
+
+        call_log = []
+
+        class MutableWithSideEffects(MutableTyped):
+            name: str
+            value: int
+
+            def post_initialize(self) -> NoReturn:
+                # Post hooks should only perform side effects
+                call_log.append(f"Initialized: {self.name}")
+
+            def post_validate(self) -> NoReturn:
+                # Validation and logging, not modification
+                if self.value < 0:
+                    raise ValueError("Value must be non-negative")
+                call_log.append(f"Validated: {self.name} = {self.value}")
+
+        call_log.clear()
+        model = MutableWithSideEffects(name="test", value=42)
+
+        assert "Initialized: test" in call_log
+        assert "Validated: test = 42" in call_log
+
+        # Instance fields are unchanged by post hooks
+        assert model.name == "test"
+        assert model.value == 42
+
+    def test_mutable_typed_modify_after_creation_with_validation(self):
+        """Test that MutableTyped validates assignments after creation."""
+
+        class MutableUser(MutableTyped):
+            name: str
+            age: int
+            count: int = 0
+
+        model = MutableUser(name="john", age=30)
+        assert model.name == "john"
+        assert model.age == 30
+        assert model.count == 0
+
+        # Can modify after creation (with validation)
+        model.name = "jane"
+        assert model.name == "jane"
+
+        model.age = 25
+        assert model.age == 25
+
+        model.count = 5
+        assert model.count == 5
+
+        # Validation still works on assignment
+        with pytest.raises(ValidationError, match="Input should be a valid integer"):
+            model.age = "not a number"
+
+        # Assignment validation also checks type
+        with pytest.raises(ValidationError):
+            model.name = 123  # Wrong type
+
+    def test_mutable_typed_assignment_triggers_validation(self):
+        """Test that assignment in MutableTyped triggers full validation including hooks."""
+
+        hook_call_count = []
+
+        class MutableWithHookCounter(MutableTyped):
+            value: int
+            computed: Optional[int] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                # Track how many times this is called
+                hook_call_count.append("pre_initialize")
+                if "value" in data:
+                    data["computed"] = data["value"] * 2
+
+        hook_call_count.clear()
+        model = MutableWithHookCounter(value=10)
+
+        # pre_initialize was called during creation
+        assert len(hook_call_count) == 1
+        assert model.computed == 20
+
+        # When we modify value, pre_initialize is called again!
+        model.value = 15
+        assert len(hook_call_count) == 2  # Called again
+        assert model.computed == 30  # Recomputed!
+
+        # This behavior is because validate_assignment=True runs full validation
+
+
 class TestMutableTyped:
     """Test MutableTyped functionality - mutable variant of Typed."""
 
@@ -3030,7 +3734,7 @@ class TestTypedVsMutableTyped:
             name: str
             age: int
 
-        # Both should validate creation the same way
+        # Both should pre_validate creation the same way
         # Typed wraps ValidationError in ValueError
         with pytest.raises(ValueError, match="Input should be a valid integer"):
             FrozenUser(name="John", age="not_a_number")
@@ -3074,7 +3778,7 @@ class TestTypedVsMutableTyped:
 
         data = {"name": "John", "age": "30"}  # String that converts to int
 
-        # Both should convert and validate the same way
+        # Both should convert and pre_validate the same way
         frozen_user = FrozenUser.model_validate(data)
         mutable_user = MutableUser.model_validate(data)
 

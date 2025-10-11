@@ -16,6 +16,7 @@ from typing import (
 )
 
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator, validate_call
+from pydantic_core import PydanticUndefined
 
 
 def format_exception_msg(ex: Exception, short: bool = False, prefix: Optional[str] = None) -> str:
@@ -173,7 +174,11 @@ class Typed(BaseModel, ABC):
         - **Serialization**: JSON and dict serialization with customizable options
         - **Class Properties**: Convenient access to model metadata and field information
         - **Registry Integration**: Compatible with morphic.Registry for factory patterns
-        - **Post-Validation Initialization**: Hook for setting up computed fields and derived attributes
+        - **Lifecycle Hooks**: Four customizable hooks for initialization and validation
+            - `pre_initialize`: Set up derived fields before validation
+            - `pre_validate`: Validate and normalize input data
+            - `post_initialize`: Perform side effects after validation
+            - `post_validate`: Validate the completed instance
 
     Configuration:
         The class uses a pre-configured Pydantic ConfigDict with the following settings:
@@ -194,7 +199,7 @@ class Typed(BaseModel, ABC):
             email: Optional[str] = None
             tags: List[str] = []
 
-        # Create and validate instances
+        # Create and pre_validate instances
         user = User(name="John", age=30, email="john@example.com")
         print(user.name)  # "John"
 
@@ -256,137 +261,67 @@ class Typed(BaseModel, ABC):
             assert task.status == Status.ACTIVE
             ```
 
-        Post-Validation Initialization:
+        Lifecycle Hooks Example:
             ```python
             from morphic.typed import Typed
             from typing import Optional
             from datetime import datetime
 
             class User(Typed):
-                name: str
+                first_name: str
+                last_name: str
                 email: str
-                computed_fields: Optional[dict] = None
+
+                # Derived fields
+                full_name: Optional[str] = None
+                email_domain: Optional[str] = None
                 created_at: Optional[str] = None
 
                 @classmethod
-                def validate(cls, data: dict) -> None:
-                    # Set computed fields during validation phase
-                    if 'name' in data and 'email' in data:
-                        data['computed_fields'] = {
-                            "display_name": data['name'].title(),
-                            "email_domain": data['email'].split("@")[1]
-                        }
+                def pre_initialize(cls, data: dict) -> None:
+                    # Set up derived fields before validation
+                    if 'first_name' in data and 'last_name' in data:
+                        data['full_name'] = f"{data['first_name']} {data['last_name']}"
+
+                    if 'email' in data:
+                        data['email_domain'] = data['email'].split("@")[1]
+
+                    if data.get('created_at') is None:
                         data['created_at'] = datetime.now().isoformat()
 
-                def initialize(self) -> None:
-                    # Called after validation, but can't modify frozen instance
-                    # Use for side effects, logging, or external system integration
-                    pass
-
-            # Initialize is called automatically after validation
-            user = User(name="john doe", email="john@example.com")
-            assert user.computed_fields["display_name"] == "John Doe"
-            assert user.computed_fields["email_domain"] == "example.com"
-            assert user.created_at is not None
-            ```
-
-        Validation vs Initialization:
-            ```python
-            class ProcessingModel(Typed):
-                raw_data: str
-                processed_data: Optional[str] = None
-                computed_result: Optional[str] = None
-
                 @classmethod
-                def validate(cls, data: dict) -> None:
-                    # Called BEFORE model creation, works on raw input data
-                    if 'raw_data' in data:
-                        data['raw_data'] = data['raw_data'].strip().lower()
-                        data['processed_data'] = f"Processed: {data['raw_data']}"
-                        # Set computed result during validation since instance is frozen
-                        data['computed_result'] = f"Result: {data['raw_data'].upper()}"
-
-                def initialize(self) -> None:
-                    # Called AFTER validation, but can't modify frozen instance
-                    # Use for side effects, logging, or external system integration
-                    pass
-
-            model = ProcessingModel(raw_data="  HELLO  ")
-            assert model.raw_data == "hello"  # From validate
-            assert model.processed_data == "Processed: hello"  # From validate
-            assert model.computed_result == "Result: HELLO"  # From validate
-            ```
-
-        Real-World Example - User Profile:
-            ```python
-            from datetime import datetime
-            from typing import Optional, List
-
-            class UserProfile(Typed):
-                username: str
-                email: str
-                birth_year: int
-
-                # Fields that will be computed during validation
-                display_name: Optional[str] = None
-                age: Optional[int] = None
-                email_domain: Optional[str] = None
-                profile_summary: Optional[str] = None
-                created_at: Optional[str] = None
-
-                @classmethod
-                def validate(cls, data: dict) -> None:
-                    # Input validation and normalization (before model creation)
-                    if 'username' in data:
-                        data['username'] = data['username'].strip().lower()
-
+                def pre_validate(cls, data: dict) -> None:
+                    # Normalize and validate input data
                     if 'email' in data:
-                        data['email'] = data['email'].strip().lower()
+                        data['email'] = data['email'].lower().strip()
 
-                    # Validate birth year
-                    if 'birth_year' in data:
-                        current_year = datetime.now().year
-                        if data['birth_year'] < 1900 or data['birth_year'] > current_year:
-                            raise ValueError(f"Invalid birth year: {data['birth_year']}")
+                    if 'first_name' in data:
+                        data['first_name'] = data['first_name'].strip().title()
 
-                    # Compute derived fields during validation
-                    if 'username' in data:
-                        data['display_name'] = data['username'].title()
+                    if 'last_name' in data:
+                        data['last_name'] = data['last_name'].strip().title()
 
-                    if 'birth_year' in data:
-                        data['age'] = datetime.now().year - data['birth_year']
+                def post_initialize(self) -> None:
+                    # Perform side effects after validation
+                    print(f"User {self.full_name} created at {self.created_at}")
 
-                    if 'email' in data:
-                        data['email_domain'] = data['email'].split('@')[1]
-
-                    # Create profile summary
-                    if all(key in data for key in ['display_name', 'age', 'email_domain']):
-                        data['profile_summary'] = f"{data['display_name']} ({data['age']} years old) - {data['email_domain']}"
-
-                    # Set creation timestamp
-                    data['created_at'] = datetime.now().isoformat()
-
-                def initialize(self) -> None:
-                    # Post-validation initialization (after model creation)
-                    # Can't modify frozen instance, but can perform side effects
-                    # e.g., logging, external system integration, etc.
-                    pass
+                def post_validate(self) -> None:
+                    # Validate the completed instance
+                    if not self.email_domain:
+                        raise ValueError("Email domain is required")
 
             # Usage
-            profile = UserProfile(
-                username="  john_doe  ",
-                email="  JOHN@EXAMPLE.COM  ",
-                birth_year=1990
+            user = User(
+                first_name="john",
+                last_name="doe",
+                email="  JOHN@EXAMPLE.COM  "
             )
-
-            # Results from validate() - input normalization and computed fields
-            assert profile.username == "john_doe"  # stripped and lowercased
-            assert profile.email == "john@example.com"  # stripped and lowercased
-            assert profile.display_name == "John_Doe"  # title case
-            assert profile.age == datetime.now().year - 1990  # calculated age
-            assert profile.email_domain == "example.com"  # extracted domain
-            assert profile.profile_summary == "John_Doe (34 years old) - example.com"
-            assert profile.created_at is not None  # timestamp set
+            assert user.first_name == "John"
+            assert user.last_name == "Doe"
+            assert user.email == "john@example.com"
+            assert user.full_name == "John Doe"
+            assert user.email_domain == "example.com"
+            assert user.created_at is not None
             ```
 
         See Also:
@@ -871,50 +806,229 @@ class Typed(BaseModel, ABC):
         return out
 
     @classmethod
-    def _set_default_param_values(cls, params: Dict):
-        assert isinstance(params, dict)
+    def _set_default_values(cls, data: Dict):
+        if not isinstance(data, dict):
+            raise ValueError(f"data must be a dictionary, got {type(data)}")
         ## Apply default values for fields not present in the input
         for field_name, field in cls.model_fields.items():
-            if field_name not in params:
-                if field.default is not None:
-                    params[field_name] = field.default
+            if field_name not in data:
+                if field.default is not PydanticUndefined:
+                    data[field_name] = field.default
                 elif field.default_factory is not None:
-                    params[field_name] = field.default_factory()
+                    data[field_name] = field.default_factory()
 
     @model_validator(mode="before")
     @classmethod
-    def _validate_inputs(cls, data: Dict) -> Dict:
-        cls._set_default_param_values(data)
-        cls.validate(data)
+    def _pre_set_validate_inputs(cls, data: Dict) -> Dict:
+        if not isinstance(data, dict):
+            raise ValueError(f"data must be a dictionary, got {type(data)}")
+        ## Proxy method for Pydantic to call
+        data = cls.pre_set_validate_inputs(data)
         return data
 
     @classmethod
-    def validate(cls, data: Dict) -> NoReturn:
+    def pre_set_validate_inputs(cls, data: Dict) -> Dict:
         """
-        Hook method for custom input validation and mutation before Pydantic model creation.
+        Default implementation of pre_set_validate_inputs, overridable by subclasses.
+        """
+        ## Set default values
+        cls._set_default_values(data)
 
-        This method is called during the Pydantic validation process (via `@model_validator(mode="before")`)
-        and allows subclasses to perform custom validation and mutation of input data before the
-        Pydantic model is instantiated. Since it's called before model creation, the data dictionary
-        can be freely modified, and these changes will be reflected in the final model instance.
+        ## Call pre_initialize for each superclass in MRO (base to derived)
+        ## Only call methods that are defined directly on each class to avoid duplicates
+        for base_cls in reversed(cls.__mro__[:-1]):  # Exclude object
+            if "pre_initialize" in base_cls.__dict__ and base_cls is not BaseModel:
+                base_cls.pre_initialize(data)
 
-        Key Features:
+        ## Call pre_validate for each superclass in MRO (base to derived)
+        ## Only call methods that are defined directly on each class to avoid duplicates
+        for base_cls in reversed(cls.__mro__[:-1]):  # Exclude object
+            if "pre_validate" in base_cls.__dict__ and base_cls is not BaseModel:
+                base_cls.pre_validate(data)
+
+        return data
+
+    @classmethod
+    def pre_initialize(cls, data: Any) -> NoReturn:
+        """
+        Pre-initialization hook for setting up derived fields before validation.
+
+        This classmethod is called after default values are set but before pre_validate.
+        It's designed for initializing fields that depend on multiple input fields
+        (e.g., computed or derived fields).
+
+        **Execution Order:**
+            1. `_set_default_values()` - Apply default values for missing fields
+            2. `pre_initialize()` - Initialize derived fields (this method)
+            3. `pre_validate()` - Validate and normalize input data
+            4. Pydantic field validation - Type conversion and constraint validation
+            5. `post_initialize()` - Post-validation initialization
+            6. `post_validate()` - Post-validation validation
+
+        **Key Features:**
+            - **Pre-validation Hook**: Called before validation logic
+            - **Mutable Data**: Can modify the input dictionary directly
+            - **Derived Fields**: Ideal for computing fields based on other fields
+            - **Automatic Inheritance**: Parent class hooks are called automatically
+
+        Args:
+            data (Dict): The input data dictionary passed to the model constructor.
+                This dictionary is mutable and can be modified in-place. Keys represent
+                field names and values represent the raw input values (with defaults applied).
+
+        Returns:
+            NoReturn: This method should not return anything. All modifications should
+                be made to the `data` dictionary in-place.
+
+        Note:
+            Parent class `pre_initialize` methods are called automatically in MRO order
+            (base to derived), so subclasses don't need to call `super().pre_initialize(data)`.
+            Override `pre_set_validate_inputs` if you need custom ordering.
+
+        Examples:
+            Basic Derived Field Initialization:
+                ```python
+                class User(Typed):
+                    first_name: str
+                    last_name: str
+                    full_name: Optional[str] = None  # Will be computed
+
+                    @classmethod
+                    def pre_initialize(cls, data: Dict) -> NoReturn:
+                        # Compute full_name from first_name and last_name
+                        if 'first_name' in data and 'last_name' in data:
+                            data['full_name'] = f"{data['first_name']} {data['last_name']}"
+
+                user = User(first_name="John", last_name="Doe")
+                assert user.full_name == "John Doe"
+                ```
+
+            Multiple Derived Fields:
+                ```python
+                from datetime import datetime
+
+                class Order(Typed):
+                    subtotal: float
+                    tax_rate: float = 0.1
+                    total: Optional[float] = None
+                    order_date: Optional[str] = None
+
+                    @classmethod
+                    def pre_initialize(cls, data: Dict) -> NoReturn:
+                        # Compute total from subtotal and tax_rate
+                        if 'subtotal' in data:
+                            subtotal = float(data['subtotal'])
+                            tax_rate = float(data.get('tax_rate', 0.1))
+                            data['total'] = subtotal * (1 + tax_rate)
+
+                        # Set order date if not provided
+                        if data.get('order_date') is None:
+                            data['order_date'] = datetime.now().isoformat()
+
+                order = Order(subtotal=100.0)
+                assert order.total == 110.0
+                assert order.order_date is not None
+                ```
+
+        Inheritance Example:
+            ```python
+            class Parent(Typed):
+                name: str
+                parent_computed: Optional[str] = None
+
+                @classmethod
+                def pre_initialize(cls, data: Dict) -> NoReturn:
+                    if 'name' in data:
+                        data['parent_computed'] = f"Parent: {data['name']}"
+
+            class Child(Parent):
+                age: int
+                child_computed: Optional[str] = None
+
+                @classmethod
+                def pre_initialize(cls, data: Dict) -> NoReturn:
+                    # Parent's hook is called automatically before this
+                    if 'name' in data and 'age' in data:
+                        data['child_computed'] = f"Child: {data['name']}, {data['age']}"
+
+            # Both hooks run automatically in order
+            model = Child(name="john", age=30)
+            assert model.parent_computed == "Parent: john"  # From parent
+            assert model.child_computed == "Child: john, 30"  # From child
+            ```
+
+        Three-Level Inheritance Example:
+            ```python
+            class Level1(Typed):
+                field1: str
+                level1_data: Optional[str] = None
+
+                @classmethod
+                def pre_initialize(cls, data: Dict) -> NoReturn:
+                    if 'field1' in data:
+                        data['level1_data'] = f"L1: {data['field1']}"
+
+            class Level2(Level1):
+                field2: str
+                level2_data: Optional[str] = None
+
+                @classmethod
+                def pre_initialize(cls, data: Dict) -> NoReturn:
+                    if 'field2' in data:
+                        data['level2_data'] = f"L2: {data['field2']}"
+
+            class Level3(Level2):
+                field3: str
+                level3_data: Optional[str] = None
+
+                @classmethod
+                def pre_initialize(cls, data: Dict) -> NoReturn:
+                    if 'field3' in data:
+                        data['level3_data'] = f"L3: {data['field3']}"
+
+            # All three hooks run in order: Level1 -> Level2 -> Level3
+            model = Level3(field1="a", field2="b", field3="c")
+            assert model.level1_data == "L1: a"
+            assert model.level2_data == "L2: b"
+            assert model.level3_data == "L3: c"
+            ```
+
+        See Also:
+            - `pre_validate()`: For validation and normalization after initialization
+            - `post_initialize()`: For post-validation initialization
+            - `pre_set_validate_inputs()`: To customize the execution order
+        """
+        pass
+
+    @classmethod
+    def pre_validate(cls, data: Any) -> NoReturn:
+        """
+        Pre-validation hook for validating and normalizing input data.
+
+        This classmethod is called after pre_initialize and before Pydantic validation.
+        It's designed for validating input data and normalizing field values.
+
+        **Execution Order:**
+            1. `_set_default_values()` - Apply default values for missing fields
+            2. `pre_initialize()` - Initialize derived fields
+            3. `pre_validate()` - Validate and normalize input data (this method)
+            4. Pydantic field validation - Type conversion and constraint validation
+            5. `post_initialize()` - Post-validation initialization
+            6. `post_validate()` - Post-validation validation
+
+        **Key Features:**
             - **Pre-validation Hook**: Called before Pydantic's field validation
             - **Mutable Data**: Can modify the input dictionary directly
             - **Early Validation**: Allows custom validation logic before type conversion
-            - **Data Enrichment**: Can add computed fields or transform existing ones
+            - **Data Normalization**: Can normalize and transform field values
             - **Error Handling**: Can raise custom validation errors with detailed messages
-
-        Execution Order:
-            1. `_set_default_param_values()` - Apply default values for missing fields
-            2. `validate()` - Custom validation and mutation (this method)
-            3. Pydantic field validation - Type conversion and constraint validation
-            4. Pydantic model validators - Any `@model_validator(mode="after")` methods
+            - **Automatic Inheritance**: Parent class hooks are called automatically
 
         Args:
             data (Dict): The input data dictionary passed to the model constructor or
                 `model_validate()`. This dictionary is mutable and can be modified in-place.
-                Keys represent field names and values represent the raw input values.
+                Keys represent field names and values represent the raw input values (with
+                defaults and pre_initialize results applied).
 
         Returns:
             NoReturn: This method should not return anything. All modifications should be
@@ -925,6 +1039,11 @@ class Typed(BaseModel, ABC):
                 The error message will be wrapped by Typed's enhanced error handling.
             Any other exception: Will be caught and wrapped by Typed's error handling system.
 
+        Note:
+            Parent class `pre_validate` methods are called automatically in MRO order
+            (base to derived), so subclasses don't need to call `super().pre_validate(data)`.
+            Override `pre_set_validate_inputs` if you need custom ordering.
+
         Examples:
             Basic Input Validation:
                 ```python
@@ -934,7 +1053,7 @@ class Typed(BaseModel, ABC):
                     age: int
 
                     @classmethod
-                    def validate(cls, data: Dict) -> NoReturn:
+                    def pre_validate(cls, data: Dict) -> NoReturn:
                         # Normalize email to lowercase
                         if 'email' in data:
                             data['email'] = data['email'].lower()
@@ -965,7 +1084,7 @@ class Typed(BaseModel, ABC):
                     total_price: Optional[float] = None  # Will be computed
 
                     @classmethod
-                    def validate(cls, data: Dict) -> NoReturn:
+                    def pre_validate(cls, data: Dict) -> NoReturn:
                         # Compute total price if not provided
                         if 'total_price' not in data and 'price' in data:
                             price = float(data['price'])
@@ -990,10 +1109,10 @@ class Typed(BaseModel, ABC):
                     duration_days: Optional[int] = None
 
                     @classmethod
-                    def validate(cls, data: Dict) -> NoReturn:
+                    def pre_validate(cls, data: Dict) -> NoReturn:
                         from datetime import datetime
 
-                        # Parse and validate dates
+                        # Parse and pre_validate dates
                         if 'start_date' in data and 'end_date' in data:
                             try:
                                 start = datetime.fromisoformat(data['start_date'])
@@ -1026,7 +1145,7 @@ class Typed(BaseModel, ABC):
                     body: Optional[str] = None
 
                     @classmethod
-                    def validate(cls, data: Dict) -> NoReturn:
+                    def pre_validate(cls, data: Dict) -> NoReturn:
                         # Normalize HTTP method
                         if 'method' in data:
                             data['method'] = data['method'].upper()
@@ -1066,7 +1185,7 @@ class Typed(BaseModel, ABC):
                     role: str = "user"
 
                     @classmethod
-                    def validate(cls, data: Dict) -> NoReturn:
+                    def pre_validate(cls, data: Dict) -> NoReturn:
                         # Validate username format
                         username = data.get('username', '')
                         if username and not username.isalnum():
@@ -1100,7 +1219,7 @@ class Typed(BaseModel, ABC):
                 priority: int = 1
 
                 @classmethod
-                def validate(cls, data: Dict) -> NoReturn:
+                def pre_validate(cls, data: Dict) -> NoReturn:
                     # Normalize title
                     if 'title' in data:
                         data['title'] = data['title'].strip()
@@ -1146,46 +1265,60 @@ class Typed(BaseModel, ABC):
             - Each validation call receives its own data dictionary copy
 
         See Also:
-            - `_set_default_param_values()`: Applies default values before validation
-            - `@model_validator(mode="after")`: Pydantic post-creation validation
+            - `pre_initialize()`: For setting up derived fields before validation
+            - `post_validate()`: For post-validation validation
+            - `pre_set_validate_inputs()`: To customize the execution order
             - `@field_validator`: Field-level validation for specific fields
-            - `model_validate()`: Entry point for dictionary-to-model conversion
         """
         pass
 
     @model_validator(mode="after")
-    def _initialize_members(self) -> T:
-        self.initialize()
+    def _post_set_validate_inputs(self) -> T:
+        self.post_set_validate_inputs()
         return self
 
-    def initialize(self) -> NoReturn:
+    def post_set_validate_inputs(self) -> NoReturn:
+        ## Call post_initialize for each class in MRO (base to derived order)
+        ## Only call methods that are defined directly on each class to avoid duplicates
+        for base_cls in reversed(self.__class__.__mro__[:-1]):  # Exclude object
+            if "post_initialize" in base_cls.__dict__ and base_cls is not BaseModel:
+                base_cls.post_initialize(self)
+
+        ## Call post_validate for each class in MRO (base to derived order)
+        ## Only call methods that are defined directly on each class to avoid duplicates
+        for base_cls in reversed(self.__class__.__mro__[:-1]):  # Exclude object
+            if "post_validate" in base_cls.__dict__ and base_cls is not BaseModel:
+                base_cls.post_validate(self)
+
+    def post_initialize(self) -> NoReturn:
         """
-        Hook method for post-validation initialization of model fields and derived attributes.
+        Post-initialization hook for side effects after validation.
 
-        This method is called automatically after Pydantic validation is complete and before
-        the model instance is fully created. It provides a hook for setting up computed fields,
-        derived attributes, and performing any initialization logic that requires access to
-        validated field values.
+        This instance method is called after Pydantic validation is complete and before
+        post_validate. It's designed for performing side effects that don't modify the
+        instance (e.g., logging, external system integration).
 
-        Key Features:
+        **Execution Order:**
+            1. `_set_default_values()` - Apply default values for missing fields
+            2. `pre_initialize()` - Initialize derived fields
+            3. `pre_validate()` - Validate and normalize input data
+            4. Pydantic field validation - Type conversion and constraint validation
+            5. `post_initialize()` - Post-validation initialization (this method)
+            6. `post_validate()` - Post-validation validation
+
+        **Key Features:**
             - **Post-Validation Hook**: Called after all field validation and type conversion
             - **Instance Access**: Can access validated field values (read-only)
-            - **Side Effects**: Perfect for logging, external system integration, or other side effects
+            - **Side Effects**: Perfect for logging, external system integration, or notifications
             - **Error Handling**: Can handle initialization errors gracefully
             - **Frozen Instance**: Cannot modify instance attributes (instance is frozen)
+            - **Automatic Inheritance**: Parent class hooks are called automatically
 
-        Execution Order:
-            1. `_set_default_param_values()` - Apply default values for missing fields
-            2. `validate()` - Custom validation and mutation of input data
-            3. Pydantic field validation - Type conversion and constraint validation
-            4. `initialize()` - Post-validation initialization (this method)
-            5. Model instance creation - Instance becomes available
-
-        Differences from `validate()`:
-            - **Timing**: `validate()` runs before model creation, `initialize()` runs after validation
-            - **Data Access**: `validate()` works on raw input dict, `initialize()` works on model instance
-            - **Purpose**: `validate()` for input transformation and computed fields, `initialize()` for side effects
-            - **Scope**: `validate()` can modify input data, `initialize()` cannot modify frozen instance
+        **Differences from pre_initialize:**
+            - **Timing**: `pre_initialize()` runs before validation, `post_initialize()` runs after
+            - **Data Access**: `pre_initialize()` works on raw input dict, `post_initialize()` works on validated instance
+            - **Purpose**: `pre_initialize()` for setting derived fields, `post_initialize()` for side effects
+            - **Mutability**: `pre_initialize()` can modify data dict, `post_initialize()` cannot modify frozen instance
 
         Args:
             None: This method takes no parameters. Access validated fields via `self`.
@@ -1198,6 +1331,11 @@ class Typed(BaseModel, ABC):
             Any exception: Exceptions raised during initialization will be caught and wrapped
                 by Typed's error handling system, similar to validation errors.
 
+        Note:
+            Parent class `post_initialize` methods are called automatically in MRO order
+            (base to derived), so subclasses don't need to call `super().post_initialize()`.
+            Override `post_set_validate_inputs` if you need custom ordering.
+
         Examples:
             Side Effects and Logging:
                 ```python
@@ -1208,14 +1346,14 @@ class Typed(BaseModel, ABC):
                     email_domain: Optional[str] = None
 
                     @classmethod
-                    def validate(cls, data: dict) -> None:
+                    def pre_validate(cls, data: dict) -> None:
                         # Set computed fields during validation
                         if 'name' in data:
                             data['display_name'] = data['name'].title()
                         if 'email' in data:
                             data['email_domain'] = data['email'].split("@")[1]
 
-                    def initialize(self) -> None:
+                    def post_initialize(self) -> None:
                         # Perform side effects after validation
                         print(f"User created: {self.display_name} ({self.email_domain})")
                         # Could also integrate with external systems, logging, etc.
@@ -1236,7 +1374,7 @@ class Typed(BaseModel, ABC):
                     metadata: Optional[dict] = None
 
                     @classmethod
-                    def validate(cls, data: dict) -> None:
+                    def pre_validate(cls, data: dict) -> None:
                         # Compute derived values during validation
                         if 'price' in data:
                             data['total_with_tax'] = data['price'] * 1.1
@@ -1245,7 +1383,7 @@ class Typed(BaseModel, ABC):
                                 "price_category": "expensive" if data['price'] > 100 else "affordable"
                             }
 
-                    def initialize(self) -> None:
+                    def post_initialize(self) -> None:
                         # Integrate with external systems after validation
                         # e.g., send to analytics, update cache, etc.
                         print(f"Product {self.name} registered in system")
@@ -1264,14 +1402,14 @@ class Typed(BaseModel, ABC):
                     error_message: Optional[str] = None
 
                     @classmethod
-                    def validate(cls, data: dict) -> None:
-                        # Set processing time and validate during validation
+                    def pre_validate(cls, data: dict) -> None:
+                        # Set processing time and pre_validate during validation
                         if 'priority' in data:
                             data['processing_time'] = data['priority'] * 100
                             if data['priority'] > 10:
                                 data['error_message'] = "Priority too high"
 
-                    def initialize(self) -> None:
+                    def post_initialize(self) -> None:
                         # Perform conditional side effects
                         if self.priority > 5:
                             print(f"High priority task created: {self.title}")
@@ -1292,13 +1430,13 @@ class Typed(BaseModel, ABC):
                     hash_value: Optional[int] = None
 
                     @classmethod
-                    def validate(cls, data: dict) -> None:
+                    def pre_validate(cls, data: dict) -> None:
                         # Generate cache key during validation
                         if 'id' in data and 'data' in data:
                             data['cache_key'] = f"cache_{data['id']}_{hash(data['data'])}"
                             data['hash_value'] = hash(data['data'])
 
-                    def initialize(self) -> None:
+                    def post_initialize(self) -> None:
                         # Interact with external systems after validation
                         # e.g., register with cache service, send to analytics, etc.
                         print(f"Model {self.id} registered with cache service")
@@ -1316,7 +1454,7 @@ class Typed(BaseModel, ABC):
                     error: Optional[str] = None
 
                     @classmethod
-                    def validate(cls, data: dict) -> None:
+                    def pre_validate(cls, data: dict) -> None:
                         # Handle processing during validation
                         if 'value' in data:
                             try:
@@ -1326,7 +1464,7 @@ class Typed(BaseModel, ABC):
                             except Exception as e:
                                 data['error'] = str(e)
 
-                    def initialize(self) -> None:
+                    def post_initialize(self) -> None:
                         # Handle side effects after validation
                         if self.error:
                             print(f"Error during processing: {self.error}")
@@ -1352,11 +1490,11 @@ class Typed(BaseModel, ABC):
                     full_address: Optional[str] = None
 
                     @classmethod
-                    def validate(cls, data: dict) -> None:
+                    def pre_validate(cls, data: dict) -> None:
                         if 'street' in data and 'city' in data:
                             data['full_address'] = f"{data['street']}, {data['city']}"
 
-                    def initialize(self) -> None:
+                    def post_initialize(self) -> None:
                         print(f"Address created: {self.full_address}")
 
                 class Person(Typed):
@@ -1365,13 +1503,13 @@ class Typed(BaseModel, ABC):
                     contact_info: Optional[str] = None
 
                     @classmethod
-                    def validate(cls, data: dict) -> None:
+                    def pre_validate(cls, data: dict) -> None:
                         if 'name' in data and 'address' in data:
                             # Create address to get full_address
                             address = Address(**data['address'])
                             data['contact_info'] = f"{data['name']} at {address.full_address}"
 
-                    def initialize(self) -> None:
+                    def post_initialize(self) -> None:
                         print(f"Person created: {self.contact_info}")
 
                 person = Person(
@@ -1390,11 +1528,11 @@ class Typed(BaseModel, ABC):
                     base_info: Optional[str] = None
 
                     @classmethod
-                    def validate(cls, data: dict) -> None:
+                    def pre_validate(cls, data: dict) -> None:
                         if 'name' in data:
                             data['base_info'] = f"Base: {data['name']}"
 
-                    def initialize(self) -> None:
+                    def post_initialize(self) -> None:
                         print(f"Base model initialized: {self.base_info}")
 
                 class ExtendedModel(BaseModel):
@@ -1402,16 +1540,16 @@ class Typed(BaseModel, ABC):
                     extended_info: Optional[str] = None
 
                     @classmethod
-                    def validate(cls, data: dict) -> None:
+                    def pre_validate(cls, data: dict) -> None:
                         # Call parent validation
-                        super().validate(data)
+                        super().pre_validate(data)
                         # Add extended validation
                         if 'name' in data and 'age' in data:
                             data['extended_info'] = f"Extended: {data['name']} is {data['age']} years old"
 
-                    def initialize(self) -> None:
+                    def post_initialize(self) -> None:
                         # Call parent initialization
-                        super().initialize()
+                        super().post_initialize()
                         # Add extended initialization
                         print(f"Extended model initialized: {self.extended_info}")
 
@@ -1427,16 +1565,66 @@ class Typed(BaseModel, ABC):
                     factory_info: Optional[str] = None
 
                     @classmethod
-                    def validate(cls, data: dict) -> None:
+                    def pre_validate(cls, data: dict) -> None:
                         if 'name' in data:
                             data['factory_info'] = f"Created via factory: {data['name']}"
 
-                    def initialize(self) -> None:
+                    def post_initialize(self) -> None:
                         print(f"Factory model initialized: {self.factory_info}")
 
                 # Works with of() factory method
                 model = FactoryModel.of(name="FactoryTest")
                 assert model.factory_info == "Created via factory: FactoryTest"
+                ```
+
+            Inheritance Example:
+                ```python
+                class Parent(Typed):
+                    name: str
+
+                    def post_initialize(self) -> None:
+                        print(f"Parent initialized: {self.name}")
+
+                class Child(Parent):
+                    age: int
+
+                    def post_initialize(self) -> None:
+                        # Parent's hook is called automatically before this
+                        print(f"Child initialized: {self.name}, age {self.age}")
+
+                # Both hooks run automatically in order
+                model = Child(name="john", age=30)
+                # Output:
+                # Parent initialized: john
+                # Child initialized: john, age 30
+                ```
+
+            Multi-Level Inheritance Example:
+                ```python
+                class Level1(Typed):
+                    field1: str
+
+                    def post_initialize(self) -> None:
+                        print(f"Level1: {self.field1}")
+
+                class Level2(Level1):
+                    field2: str
+
+                    def post_initialize(self) -> None:
+                        print(f"Level2: {self.field2}")
+
+                class Level3(Level2):
+                    field3: str
+
+                    def post_initialize(self) -> None:
+                        print(f"Level3: {self.field3}")
+
+                # All three hooks run in order: Level1 -> Level2 -> Level3
+                model = Level3(field1="a", field2="b", field3="c")
+                # Output:
+                # Level1: a
+                # Level2: b
+                # Level3: c
                 ```
 
         Performance Considerations:
@@ -1455,13 +1643,105 @@ class Typed(BaseModel, ABC):
             - Handle errors gracefully with try-catch blocks
             - Keep initialization logic simple and fast
             - Document any side effects or external dependencies
-            - Use `validate()` for input transformation and computed fields instead
+            - Use `pre_validate()` for input transformation and computed fields instead
 
         See Also:
-            - `validate()`: For input validation and transformation before model creation
+            - `pre_initialize()`: For setting up derived fields before validation
+            - `post_validate()`: For post-validation validation
+            - `post_set_validate_inputs()`: To customize the execution order
             - `@model_validator(mode="after")`: Pydantic's post-creation validation hook
-            - `@field_validator`: Field-level validation for specific fields
-            - `model_validate()`: Entry point for dictionary-to-model conversion
+        """
+        pass
+
+    def post_validate(self) -> NoReturn:
+        """
+        Post-validation hook for validating the model instance after initialization.
+
+        This instance method is called after post_initialize. It's designed for
+        performing validation on the fully constructed and initialized model instance.
+
+        **Execution Order:**
+            1. `_set_default_values()` - Apply default values for missing fields
+            2. `pre_initialize()` - Initialize derived fields
+            3. `pre_validate()` - Validate and normalize input data
+            4. Pydantic field validation - Type conversion and constraint validation
+            5. `post_initialize()` - Post-validation initialization
+            6. `post_validate()` - Post-validation validation (this method)
+
+        **Key Features:**
+            - **Post-Validation Hook**: Called after initialization is complete
+            - **Instance Access**: Can access all validated and initialized fields (read-only)
+            - **Cross-Field Validation**: Perfect for validating relationships between fields
+            - **Frozen Instance**: Cannot modify instance attributes (instance is frozen)
+            - **Automatic Inheritance**: Parent class hooks are called automatically
+
+        Args:
+            None: This method takes no parameters. Access validated fields via `self`.
+
+        Returns:
+            NoReturn: This method should not return anything. It's primarily for
+                validation that raises exceptions if the instance is invalid.
+
+        Raises:
+            ValueError: Should raise ValueError (or subclasses) for validation failures.
+            Any other exception: Will be caught and wrapped by Typed's error handling system.
+
+        Note:
+            Parent class `post_validate` methods are called automatically in MRO order
+            (base to derived), so subclasses don't need to call `super().post_validate()`.
+            Override `post_set_validate_inputs` if you need custom ordering.
+
+        Examples:
+            Cross-Field Validation:
+                ```python
+                class DateRange(Typed):
+                    start_date: str
+                    end_date: str
+
+                    def post_validate(self) -> NoReturn:
+                        from datetime import datetime
+                        start = datetime.fromisoformat(self.start_date)
+                        end = datetime.fromisoformat(self.end_date)
+                        if start >= end:
+                            raise ValueError("start_date must be before end_date")
+
+                # Valid range
+                date_range = DateRange(start_date="2024-01-01", end_date="2024-01-10")
+
+                # Invalid range raises error
+                try:
+                    DateRange(start_date="2024-01-10", end_date="2024-01-01")
+                except ValueError as e:
+                    print(e)  # "start_date must be before end_date"
+                ```
+
+            Business Logic Validation:
+                ```python
+                class Order(Typed):
+                    items: List[str]
+                    subtotal: float
+                    discount: float = 0.0
+                    total: float
+
+                    def post_validate(self) -> NoReturn:
+                        # Validate discount
+                        if self.discount < 0 or self.discount > self.subtotal:
+                            raise ValueError("Invalid discount amount")
+
+                        # Validate total calculation
+                        expected_total = self.subtotal - self.discount
+                        if abs(self.total - expected_total) > 0.01:
+                            raise ValueError(f"Total mismatch: expected {expected_total}, got {self.total}")
+
+                        # Validate items
+                        if not self.items:
+                            raise ValueError("Order must have at least one item")
+                ```
+
+        See Also:
+            - `pre_validate()`: For input validation before model creation
+            - `post_initialize()`: For side effects after validation
+            - `post_set_validate_inputs()`: To customize the execution order
         """
         pass
 
@@ -1479,39 +1759,108 @@ class MutableTyped(Typed):
     - **Validated**: All assignments are validated against field types
     - **Type Safe**: Maintains the same type checking as Typed
     - **Pydantic Compatible**: Built on Pydantic's validation system
+    - **Assignment Validation**: Each assignment triggers full validation pipeline
 
     Configuration:
     - `frozen=False`: Allows field modification
     - `validate_assignment=True`: Validates assignments on field modification
 
-    Examples:
-        >>> class User(MutableTyped):
-        ...     name: str
-        ...     age: int
-        ...     active: bool = True
-        ...
-        >>> user = User(name="John", age=30)
-        >>> user.name = "Jane"  # This works with MutableTyped
-        >>> user.age = 25       # This also works
-        >>> print(user.name)    # "Jane"
+    Basic Usage:
+        ```python
+        class User(MutableTyped):
+            name: str
+            age: int
+            active: bool = True
+
+        user = User(name="John", age=30)
+        user.name = "Jane"  # This works with MutableTyped
+        user.age = 25       # This also works
+        print(user.name)    # "Jane"
 
         # Compare with regular Typed (frozen):
-        >>> class FrozenUser(Typed):
-        ...     name: str
-        ...     age: int
-        ...
-        >>> frozen_user = FrozenUser(name="John", age=30)
-        >>> frozen_user.name = "Jane"  # This would raise ValidationError
+        class FrozenUser(Typed):
+            name: str
+            age: int
 
-    Validation:
+        frozen_user = FrozenUser(name="John", age=30)
+        frozen_user.name = "Jane"  # This would raise ValidationError
+        ```
+
+    Validation on Assignment:
         All field assignments are validated against the declared types:
 
-        >>> user = User(name="John", age=30)
-        >>> user.age = "not_a_number"  # Raises ValidationError
+        ```python
+        user = User(name="John", age=30)
+        user.age = "not_a_number"  # Raises ValidationError
+
+        # Type checking is enforced
+        user.name = 123  # Raises ValidationError (expects str)
+        ```
+
+    Hooks and Derived Fields:
+        **Important**: Use pre-hooks for derived fields, not post-hooks.
+        Post-hooks should only perform side effects (logging, notifications, etc.).
+
+        ```python
+        class UserWithScore(MutableTyped):
+            name: str
+            age: int
+            score: Optional[int] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> None:
+                # ✅ CORRECT: Set derived fields in pre_initialize
+                if 'age' in data:
+                    data['score'] = data['age'] * 10
+
+            def post_initialize(self) -> None:
+                # ✅ CORRECT: Use post hooks for side effects only
+                print(f"User {self.name} created with score {self.score}")
+                # ❌ WRONG: Don't modify instance here
+                # self.score = self.age * 10  # Would cause issues
+
+        user = UserWithScore(name="John", age=30)
+        print(user.score)  # 300 (set by pre_initialize)
+
+        # Modifying age triggers validation including pre_initialize again
+        user.age = 25
+        print(user.score)  # 250 (recomputed by pre_initialize!)
+        ```
+
+    Assignment Triggers Full Validation:
+        When you assign to a field in MutableTyped, the full validation pipeline
+        runs, including pre-hooks. This means derived fields can be recomputed:
+
+        ```python
+        class Product(MutableTyped):
+            price: float
+            tax_rate: float = 0.1
+            total: Optional[float] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> None:
+                if 'price' in data:
+                    tax_rate = data.get('tax_rate', 0.1)
+                    data['total'] = data['price'] * (1 + tax_rate)
+
+        product = Product(price=100.0)
+        print(product.total)  # 110.0
+
+        # Assignment triggers pre_initialize again
+        product.price = 200.0
+        print(product.total)  # 220.0 (automatically recomputed!)
+        ```
+
+    Performance Considerations:
+        - Each assignment triggers full validation (including hooks)
+        - This provides consistency but has performance cost
+        - For bulk updates, consider creating a new instance instead
 
     See Also:
         - `Typed`: The base frozen (immutable) class
-        - `validate()`: For function parameter validation
+        - `pre_validate()`: For function parameter validation
+        - `pre_initialize()`: For setting up derived fields
+        - `post_initialize()`: For side effects after creation
         - Pydantic's `ConfigDict`: For advanced configuration options
     """
 
