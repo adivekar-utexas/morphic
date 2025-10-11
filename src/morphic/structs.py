@@ -1,5 +1,6 @@
 """Collection and data structure utilities."""
 
+from collections.abc import MutableMapping
 from typing import Any, List, Literal, Optional, Set, Tuple, Union
 
 from .imports import optional_dependency
@@ -331,3 +332,162 @@ def only_value(collection: dict, raise_error: bool = True) -> Any:
             f"Expected input {type(collection)} to have only one item; found {len(collection)} elements."
         )
     return collection
+
+
+# ======================== Dictionary utilities ======================== #
+
+
+class AttrDict(MutableMapping):
+    """A dictionary that supports both attribute and item access.
+
+    `AttrDict` provides a convenient way to access dictionary keys as attributes,
+    allowing for cleaner syntax while maintaining full dictionary functionality.
+
+    Attributes and dictionary keys are synchronized bidirectionally:
+    - Setting an attribute updates the dictionary: `obj.key = value` → `obj['key'] = value`
+    - Setting a dictionary item makes it accessible as an attribute: `obj['key'] = value` → `obj.key`
+    - Deleting works both ways: `del obj.key` ↔ `del obj['key']`
+
+    This class fully implements the `MutableMapping` interface, so it behaves like a
+    regular dictionary for all standard operations (iteration, len, containment checks, etc.).
+
+    Private attributes (starting with '_') are stored as real object attributes and are
+    not accessible via dictionary syntax.
+
+    Examples:
+        Basic usage with attribute and item access:
+
+        >>> cfg = AttrDict({"a": 1, "b": 2})
+        >>> cfg.a                    # Access via attribute
+        1
+        >>> cfg["b"]                 # Access via item
+        2
+        >>> cfg.c = 3                # Set via attribute
+        >>> cfg["c"]                 # Available via item access
+        3
+        >>> cfg["d"] = 4             # Set via item
+        >>> cfg.d                    # Available via attribute access
+        4
+
+        Initialization with keyword arguments:
+
+        >>> config = AttrDict(x=10, y=20)
+        >>> config.x
+        10
+        >>> config["y"]
+        20
+
+        Mixed initialization:
+
+        >>> params = AttrDict({"learning_rate": 0.01}, batch_size=32, epochs=10)
+        >>> params.learning_rate
+        0.01
+        >>> params.batch_size
+        32
+
+        Dictionary operations:
+
+        >>> cfg = AttrDict({"a": 1, "b": 2})
+        >>> len(cfg)
+        2
+        >>> "a" in cfg
+        True
+        >>> list(cfg.keys())
+        ['a', 'b']
+        >>> cfg.update({"c": 3})
+        >>> cfg.c
+        3
+
+        Deletion:
+
+        >>> cfg = AttrDict({"a": 1, "b": 2})
+        >>> del cfg.a                # Delete via attribute
+        >>> "a" in cfg
+        False
+        >>> del cfg["b"]             # Delete via item
+        >>> "b" in cfg
+        False
+
+        Converting to regular dict:
+
+        >>> cfg = AttrDict({"a": 1, "b": 2})
+        >>> cfg.to_dict()
+        {'a': 1, 'b': 2}
+
+    Note:
+        Keys starting with '_' can be stored in the dictionary and accessed like any
+        other key. However, due to the use of `__slots__`, you cannot dynamically create
+        private attributes on the object itself (they must be stored in the dict).
+
+        >>> cfg = AttrDict({"a": 1})
+        >>> cfg["_private"] = "internal"  # Stored in dictionary
+        >>> "_private" in cfg              # In the dictionary
+        True
+        >>> cfg._private                   # Accessible as attribute
+        'internal'
+
+        The internal `_data` attribute is stored separately and is not accessible
+        via dictionary operations.
+
+    Args:
+        data: Initial data as a dictionary or mapping object (optional).
+        **kwargs: Additional key-value pairs to initialize the dictionary.
+
+    Raises:
+        AttributeError: When accessing a non-existent attribute.
+        KeyError: When accessing a non-existent dictionary key.
+    """
+
+    __slots__ = ("_data",)
+
+    def __init__(self, data=None, /, **kwargs):
+        # store the real dict in a private slot to avoid recursion in __setattr__
+        object.__setattr__(self, "_data", dict(data or {}))
+        if kwargs:
+            self._data.update(kwargs)
+
+    # ---- Mapping protocol (so it behaves like a real dict) ----
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def __setitem__(self, key, value):
+        self._data[key] = value
+
+    def __delitem__(self, key):
+        del self._data[key]
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self):
+        return len(self._data)
+
+    # ---- Attribute <-> item bridge ----
+    def __getattr__(self, name):
+        # Called only if normal attribute lookup fails; map to dict read
+        try:
+            return self._data[name]
+        except KeyError as e:
+            raise AttributeError(name) from e
+
+    def __setattr__(self, name, value):
+        # Keep private/dunder names as real attributes; everything else into dict
+        if name.startswith("_"):
+            object.__setattr__(self, name, value)
+        else:
+            self._data[name] = value
+
+    def __delattr__(self, name):
+        if name.startswith("_"):
+            object.__delattr__(self, name)
+        else:
+            try:
+                del self._data[name]
+            except KeyError as e:
+                raise AttributeError(name) from e
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self._data!r})"
+
+    def to_dict(self):
+        return dict(self._data)

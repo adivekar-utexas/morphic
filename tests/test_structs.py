@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from morphic.structs import (
+    AttrDict,
     all_are_false,
     all_are_none,
     all_are_not_none,
@@ -718,3 +719,513 @@ class TestIntegrationScenarios:
 
         # Check if we have multiple non-null values
         assert multiple_are_not_none(*normalized) is True
+
+
+class TestAttrDict:
+    """Tests for AttrDict class."""
+
+    def test_initialization_empty(self):
+        """Test empty AttrDict initialization."""
+        ad = AttrDict()
+        assert len(ad) == 0
+        assert ad.to_dict() == {}
+
+    def test_initialization_with_dict(self):
+        """Test AttrDict initialization with dictionary."""
+        ad = AttrDict({"a": 1, "b": 2})
+        assert len(ad) == 2
+        assert ad["a"] == 1
+        assert ad["b"] == 2
+
+    def test_initialization_with_kwargs(self):
+        """Test AttrDict initialization with keyword arguments."""
+        ad = AttrDict(x=10, y=20)
+        assert len(ad) == 2
+        assert ad["x"] == 10
+        assert ad["y"] == 20
+
+    def test_initialization_mixed(self):
+        """Test AttrDict initialization with both dict and kwargs."""
+        ad = AttrDict({"a": 1}, b=2, c=3)
+        assert len(ad) == 3
+        assert ad["a"] == 1
+        assert ad["b"] == 2
+        assert ad["c"] == 3
+
+    def test_initialization_with_none(self):
+        """Test AttrDict initialization with None."""
+        ad = AttrDict(None)
+        assert len(ad) == 0
+        assert ad.to_dict() == {}
+
+    def test_attribute_read(self):
+        """Test reading values via attribute access."""
+        ad = AttrDict({"a": 1, "b": 2})
+        assert ad.a == 1
+        assert ad.b == 2
+
+    def test_attribute_write(self):
+        """Test writing values via attribute access."""
+        ad = AttrDict()
+        ad.a = 1
+        ad.b = 2
+        assert ad["a"] == 1
+        assert ad["b"] == 2
+        assert len(ad) == 2
+
+    def test_item_read(self):
+        """Test reading values via item access."""
+        ad = AttrDict(x=10, y=20)
+        assert ad["x"] == 10
+        assert ad["y"] == 20
+
+    def test_item_write(self):
+        """Test writing values via item access."""
+        ad = AttrDict()
+        ad["a"] = 1
+        ad["b"] = 2
+        assert ad.a == 1
+        assert ad.b == 2
+        assert len(ad) == 2
+
+    def test_bidirectional_access(self):
+        """Test bidirectional access between attributes and items."""
+        ad = AttrDict()
+
+        # Set via attribute, read via item
+        ad.attr_key = "attr_value"
+        assert ad["attr_key"] == "attr_value"
+
+        # Set via item, read via attribute
+        ad["item_key"] = "item_value"
+        assert ad.item_key == "item_value"
+
+    def test_attribute_deletion(self):
+        """Test deletion via attribute access."""
+        ad = AttrDict({"a": 1, "b": 2})
+        del ad.a
+        assert "a" not in ad
+        assert len(ad) == 1
+        with pytest.raises(AttributeError):
+            _ = ad.a
+
+    def test_item_deletion(self):
+        """Test deletion via item access."""
+        ad = AttrDict({"a": 1, "b": 2})
+        del ad["a"]
+        assert "a" not in ad
+        assert len(ad) == 1
+        with pytest.raises(KeyError):
+            _ = ad["a"]
+
+    def test_delete_nonexistent_attribute(self):
+        """Test deleting non-existent attribute raises AttributeError."""
+        ad = AttrDict({"a": 1})
+        with pytest.raises(AttributeError):
+            del ad.nonexistent
+
+    def test_delete_nonexistent_item(self):
+        """Test deleting non-existent item raises KeyError."""
+        ad = AttrDict({"a": 1})
+        with pytest.raises(KeyError):
+            del ad["nonexistent"]
+
+    def test_getattr_nonexistent(self):
+        """Test accessing non-existent attribute raises AttributeError."""
+        ad = AttrDict({"a": 1})
+        with pytest.raises(AttributeError):
+            _ = ad.nonexistent
+
+    def test_getitem_nonexistent(self):
+        """Test accessing non-existent item raises KeyError."""
+        ad = AttrDict({"a": 1})
+        with pytest.raises(KeyError):
+            _ = ad["nonexistent"]
+
+    def test_private_attributes(self):
+        """Test that private attributes (starting with _) are not accessible via dict operations."""
+        ad = AttrDict({"a": 1})
+
+        # Try to set a key starting with '_' via dict access
+        ad["_private"] = "internal"
+
+        # This key should be in the dictionary
+        assert "_private" in ad
+        assert ad["_private"] == "internal"
+
+        # Can also access via attribute
+        assert ad._private == "internal"
+
+        # Both 'a' and '_private' should be in the dict
+        assert len(ad) == 2
+
+        # Note: Due to __slots__, we cannot add arbitrary private attributes
+        # that aren't stored in the dict (e.g., ad._something = value will fail)
+
+    def test_iteration(self):
+        """Test iteration over AttrDict."""
+        ad = AttrDict({"a": 1, "b": 2, "c": 3})
+        keys = list(ad)
+        assert set(keys) == {"a", "b", "c"}
+
+    def test_keys_method(self):
+        """Test keys() method."""
+        ad = AttrDict({"a": 1, "b": 2})
+        keys = list(ad.keys())
+        assert set(keys) == {"a", "b"}
+
+    def test_values_method(self):
+        """Test values() method."""
+        ad = AttrDict({"a": 1, "b": 2})
+        values = list(ad.values())
+        assert set(values) == {1, 2}
+
+    def test_items_method(self):
+        """Test items() method."""
+        ad = AttrDict({"a": 1, "b": 2})
+        items = list(ad.items())
+        assert set(items) == {("a", 1), ("b", 2)}
+
+    def test_len(self):
+        """Test len() function."""
+        ad = AttrDict()
+        assert len(ad) == 0
+
+        ad["a"] = 1
+        assert len(ad) == 1
+
+        ad.b = 2
+        ad.c = 3
+        assert len(ad) == 3
+
+    def test_contains(self):
+        """Test 'in' operator."""
+        ad = AttrDict({"a": 1, "b": 2})
+        assert "a" in ad
+        assert "b" in ad
+        assert "c" not in ad
+
+    def test_get_method(self):
+        """Test get() method with default values."""
+        ad = AttrDict({"a": 1})
+        assert ad.get("a") == 1
+        assert ad.get("b") is None
+        assert ad.get("b", "default") == "default"
+
+    def test_update_method(self):
+        """Test update() method."""
+        ad = AttrDict({"a": 1})
+        ad.update({"b": 2, "c": 3})
+        assert len(ad) == 3
+        assert ad.a == 1
+        assert ad.b == 2
+        assert ad.c == 3
+
+    def test_update_with_kwargs(self):
+        """Test update() method with keyword arguments."""
+        ad = AttrDict({"a": 1})
+        ad.update(b=2, c=3)
+        assert len(ad) == 3
+        assert ad["b"] == 2
+        assert ad["c"] == 3
+
+    def test_pop_method(self):
+        """Test pop() method."""
+        ad = AttrDict({"a": 1, "b": 2})
+        value = ad.pop("a")
+        assert value == 1
+        assert "a" not in ad
+        assert len(ad) == 1
+
+    def test_pop_with_default(self):
+        """Test pop() method with default value."""
+        ad = AttrDict({"a": 1})
+        value = ad.pop("nonexistent", "default")
+        assert value == "default"
+        assert len(ad) == 1
+
+    def test_popitem_method(self):
+        """Test popitem() method."""
+        ad = AttrDict({"a": 1})
+        key, value = ad.popitem()
+        assert key == "a"
+        assert value == 1
+        assert len(ad) == 0
+
+    def test_clear_method(self):
+        """Test clear() method."""
+        ad = AttrDict({"a": 1, "b": 2, "c": 3})
+        ad.clear()
+        assert len(ad) == 0
+        assert ad.to_dict() == {}
+
+    def test_setdefault_method(self):
+        """Test setdefault() method."""
+        ad = AttrDict({"a": 1})
+
+        # Key exists
+        value = ad.setdefault("a", 99)
+        assert value == 1
+        assert ad.a == 1
+
+        # Key doesn't exist
+        value = ad.setdefault("b", 2)
+        assert value == 2
+        assert ad.b == 2
+
+    def test_to_dict(self):
+        """Test to_dict() method returns a regular dictionary."""
+        ad = AttrDict({"a": 1, "b": 2, "c": 3})
+        d = ad.to_dict()
+        assert isinstance(d, dict)
+        assert not isinstance(d, AttrDict)
+        assert d == {"a": 1, "b": 2, "c": 3}
+
+    def test_to_dict_copy(self):
+        """Test that to_dict() returns a copy, not a reference."""
+        ad = AttrDict({"a": 1})
+        d = ad.to_dict()
+        d["b"] = 2
+        assert "b" not in ad
+        assert len(ad) == 1
+
+    def test_repr(self):
+        """Test __repr__ method."""
+        ad = AttrDict({"a": 1, "b": 2})
+        repr_str = repr(ad)
+        assert "AttrDict" in repr_str
+        assert "'a'" in repr_str or '"a"' in repr_str
+        assert "1" in repr_str
+
+    def test_equality(self):
+        """Test equality comparison with dictionaries."""
+        ad = AttrDict({"a": 1, "b": 2})
+        assert ad == {"a": 1, "b": 2}
+        assert ad != {"a": 1, "b": 3}
+        assert ad != {"a": 1}
+
+    def test_different_data_types(self):
+        """Test storing different data types."""
+        ad = AttrDict()
+        ad.string_val = "hello"
+        ad.int_val = 42
+        ad.float_val = 3.14
+        ad.list_val = [1, 2, 3]
+        ad.dict_val = {"nested": "dict"}
+        ad.none_val = None
+        ad.bool_val = True
+
+        assert ad.string_val == "hello"
+        assert ad.int_val == 42
+        assert ad.float_val == 3.14
+        assert ad.list_val == [1, 2, 3]
+        assert ad.dict_val == {"nested": "dict"}
+        assert ad.none_val is None
+        assert ad.bool_val is True
+
+    def test_nested_attrdict(self):
+        """Test nesting AttrDict objects."""
+        inner = AttrDict({"x": 1, "y": 2})
+        outer = AttrDict({"inner": inner, "z": 3})
+
+        assert outer.inner.x == 1
+        assert outer["inner"]["y"] == 2
+        assert outer.z == 3
+
+    def test_overwrite_existing_value(self):
+        """Test overwriting existing values."""
+        ad = AttrDict({"a": 1})
+        ad.a = 2
+        assert ad.a == 2
+        assert ad["a"] == 2
+
+        ad["a"] = 3
+        assert ad.a == 3
+        assert ad["a"] == 3
+
+    def test_update_existing_value_with_update(self):
+        """Test updating existing values with update() method."""
+        ad = AttrDict({"a": 1, "b": 2})
+        ad.update({"a": 10, "c": 3})
+        assert ad.a == 10
+        assert ad.b == 2
+        assert ad.c == 3
+
+    def test_copy_like_behavior(self):
+        """Test creating a copy of AttrDict."""
+        ad = AttrDict({"a": 1, "b": [1, 2, 3]})
+
+        # Create a new AttrDict from the existing one
+        copied = AttrDict(ad.to_dict())
+
+        # Modify the original
+        ad.a = 2
+        ad.c = 3
+
+        # Copy should not be affected for simple values
+        assert copied.a == 1
+        assert "c" not in copied
+
+        # Note: Since we used to_dict(), nested mutable objects are shared
+        # This is standard shallow copy behavior
+        ad.b.append(4)
+        assert copied.b == [1, 2, 3, 4]
+
+    def test_boolean_context(self):
+        """Test AttrDict in boolean context."""
+        ad_empty = AttrDict()
+        ad_filled = AttrDict({"a": 1})
+
+        # Empty AttrDict should be falsy (standard dict behavior)
+        assert not ad_empty
+        assert bool(ad_empty) is False
+
+        # Non-empty AttrDict should be truthy
+        assert ad_filled
+        assert bool(ad_filled) is True
+
+    def test_special_key_names(self):
+        """Test handling of special key names that could conflict with methods."""
+        ad = AttrDict()
+
+        # These should work as they don't start with '_'
+        ad.keys_data = "data"
+        ad.items_data = "items"
+        ad.values_data = "values"
+
+        # Accessing the method should still work
+        assert callable(ad.keys)
+
+        # Accessing the data should work via item access
+        assert ad["keys_data"] == "data"
+
+        # But attribute access will get the data, not the method
+        # (because __getattr__ is only called when normal lookup fails)
+        assert ad.keys_data == "data"
+
+    def test_example_from_docstring(self):
+        """Test the example provided in the user's query."""
+        cfg = AttrDict({"a": 1})
+        cfg.b = 2  # sets cfg['b'] = 2
+        assert cfg.a == 1  # reads cfg['a']
+        assert cfg["b"] == 2
+        del cfg.b  # deletes key 'b'
+        assert "b" not in cfg
+
+
+class TestAttrDictUseCases:
+    """Real-world use case tests for AttrDict."""
+
+    def test_configuration_object(self):
+        """Test using AttrDict as a configuration object."""
+        config = AttrDict(
+            {
+                "database_url": "postgresql://localhost/db",
+                "debug": True,
+                "max_connections": 10,
+            }
+        )
+
+        # Easy attribute access
+        assert config.database_url == "postgresql://localhost/db"
+        assert config.debug is True
+
+        # Add new configuration
+        config.cache_enabled = True
+        assert config["cache_enabled"] is True
+
+        # Update configuration
+        config.max_connections = 20
+        assert config["max_connections"] == 20
+
+    def test_api_response_handling(self):
+        """Test using AttrDict to handle API responses."""
+        response = AttrDict(
+            {
+                "status": "success",
+                "data": {
+                    "user_id": 123,
+                    "username": "john_doe",
+                },
+                "metadata": {
+                    "timestamp": "2025-10-11T12:00:00Z",
+                },
+            }
+        )
+
+        assert response.status == "success"
+        assert response["data"]["user_id"] == 123
+
+        # Can still use dict methods
+        assert "metadata" in response
+        assert list(response.keys()) == ["status", "data", "metadata"]
+
+    def test_builder_pattern(self):
+        """Test using AttrDict in a builder-like pattern."""
+        params = AttrDict()
+        params.learning_rate = 0.01
+        params.batch_size = 32
+        params.epochs = 100
+        params.optimizer = "adam"
+
+        # Convert to dict for passing to functions
+        params_dict = params.to_dict()
+        assert params_dict == {
+            "learning_rate": 0.01,
+            "batch_size": 32,
+            "epochs": 100,
+            "optimizer": "adam",
+        }
+
+    def test_dynamic_attribute_creation(self):
+        """Test dynamically creating attributes based on runtime data."""
+        data = AttrDict()
+
+        # Simulate dynamic attribute creation
+        for i in range(5):
+            key = f"item_{i}"
+            data[key] = i * 10
+
+        # Access dynamically created attributes
+        assert data.item_0 == 0
+        assert data.item_4 == 40
+        assert len(data) == 5
+
+    def test_namespace_like_usage(self):
+        """Test using AttrDict as a namespace."""
+        ns = AttrDict()
+        ns.PI = 3.14159
+        ns.E = 2.71828
+        ns.PHI = 1.61803
+
+        # Clean attribute access like a namespace
+        circle_area = ns.PI * (5**2)
+        assert abs(circle_area - 78.53975) < 0.00001
+
+    def test_hierarchical_configuration(self):
+        """Test hierarchical configuration with nested AttrDicts."""
+        config = AttrDict(
+            {
+                "server": AttrDict(
+                    {
+                        "host": "localhost",
+                        "port": 8080,
+                    }
+                ),
+                "database": AttrDict(
+                    {
+                        "host": "db.example.com",
+                        "port": 5432,
+                        "name": "myapp",
+                    }
+                ),
+            }
+        )
+
+        # Easy nested access
+        assert config.server.host == "localhost"
+        assert config.database.port == 5432
+
+        # Add new nested config
+        config.cache = AttrDict({"enabled": True, "ttl": 3600})
+        assert config.cache.ttl == 3600
