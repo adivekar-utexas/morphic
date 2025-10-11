@@ -3841,6 +3841,233 @@ class TestNestedTypedWithHooks:
         assert "cache_ttl=3600" in settings.summary
         assert "db_host=localhost" in settings.summary
 
+    def test_autoenum_direct_field(self):
+        """Test automatic conversion for direct AutoEnum field."""
+
+        class Status(AutoEnum):
+            PENDING = auto()
+            ACTIVE = auto()
+            COMPLETED = auto()
+
+        class Task(Typed):
+            name: str
+            status: Status
+            status_display: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "status" in data:
+                    # Status is already a Status enum (not a string!)
+                    status = data["status"]
+                    assert isinstance(status, Status)
+                    data["status_display"] = f"Task is {status.name}"
+
+        task = Task(name="Review PR", status="ACTIVE")
+
+        assert isinstance(task.status, Status)
+        assert task.status == Status.ACTIVE
+        assert task.status_display == "Task is ACTIVE"
+
+    def test_autoenum_optional_field(self):
+        """Test automatic conversion for Optional[AutoEnum]."""
+
+        class Priority(AutoEnum):
+            LOW = auto()
+            MEDIUM = auto()
+            HIGH = auto()
+
+        class Issue(Typed):
+            title: str
+            priority: Optional[Priority] = None
+            priority_label: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "priority" in data and data["priority"] is not None:
+                    # Priority is already a Priority enum
+                    priority = data["priority"]
+                    assert isinstance(priority, Priority)
+                    data["priority_label"] = f"Priority: {priority.name}"
+
+        issue1 = Issue(title="Bug", priority="HIGH")
+        assert isinstance(issue1.priority, Priority)
+        assert issue1.priority == Priority.HIGH
+        assert issue1.priority_label == "Priority: HIGH"
+
+        issue2 = Issue(title="Feature", priority=None)
+        assert issue2.priority is None
+        assert issue2.priority_label is None
+
+    def test_autoenum_list_field(self):
+        """Test automatic conversion for List[AutoEnum]."""
+
+        class Permission(AutoEnum):
+            READ = auto()
+            WRITE = auto()
+            DELETE = auto()
+
+        class User(Typed):
+            name: str
+            permissions: List[Permission]
+            permissions_summary: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "permissions" in data:
+                    # Permissions are already Permission enums
+                    perms = data["permissions"]
+                    assert all(isinstance(p, Permission) for p in perms)
+                    names = [p.name for p in perms]
+                    data["permissions_summary"] = f"Permissions: {', '.join(names)}"
+
+        user = User(name="Alice", permissions=["READ", "WRITE"])
+
+        assert isinstance(user.permissions, list)
+        assert len(user.permissions) == 2
+        assert all(isinstance(p, Permission) for p in user.permissions)
+        assert user.permissions[0] == Permission.READ
+        assert user.permissions[1] == Permission.WRITE
+        assert user.permissions_summary == "Permissions: READ, WRITE"
+
+    def test_autoenum_set_field(self):
+        """Test automatic conversion for Set[AutoEnum]."""
+
+        class Feature(AutoEnum):
+            CACHING = auto()
+            LOGGING = auto()
+            METRICS = auto()
+
+        class Service(Typed):
+            name: str
+            features: Set[Feature]
+            features_summary: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "features" in data:
+                    # Features are already Feature enums (in list form, Pydantic converts to set)
+                    features = data["features"]
+                    assert all(isinstance(f, Feature) for f in features)
+                    names = sorted([f.name for f in features])
+                    data["features_summary"] = f"Features: {', '.join(names)}"
+
+        service = Service(name="API", features=["CACHING", "LOGGING"])
+
+        assert isinstance(service.features, set)
+        assert len(service.features) == 2
+        assert all(isinstance(f, Feature) for f in service.features)
+        assert Feature.CACHING in service.features
+        assert Feature.LOGGING in service.features
+
+    def test_autoenum_tuple_field(self):
+        """Test automatic conversion for Tuple[AutoEnum, ...]."""
+
+        class Color(AutoEnum):
+            RED = auto()
+            GREEN = auto()
+            BLUE = auto()
+
+        class Palette(Typed):
+            name: str
+            colors: Tuple[Color, ...]
+            colors_display: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "colors" in data:
+                    # Colors are already Color enums
+                    colors = data["colors"]
+                    assert isinstance(colors, tuple)
+                    assert all(isinstance(c, Color) for c in colors)
+                    names = [c.name for c in colors]
+                    data["colors_display"] = f"Colors: {' -> '.join(names)}"
+
+        palette = Palette(name="Primary", colors=("RED", "GREEN", "BLUE"))
+
+        assert isinstance(palette.colors, tuple)
+        assert len(palette.colors) == 3
+        assert all(isinstance(c, Color) for c in palette.colors)
+        assert palette.colors_display == "Colors: RED -> GREEN -> BLUE"
+
+    def test_autoenum_dict_values(self):
+        """Test automatic conversion for Dict[str, AutoEnum]."""
+
+        class Environment(AutoEnum):
+            DEV = auto()
+            STAGING = auto()
+            PROD = auto()
+
+        class Deployment(Typed):
+            name: str
+            environments: Dict[str, Environment]
+            summary: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "environments" in data:
+                    # Environment values are already Environment enums
+                    envs = data["environments"]
+                    assert isinstance(envs, dict)
+                    assert all(isinstance(v, Environment) for v in envs.values())
+                    env_strs = [f"{k}:{v.name}" for k, v in sorted(envs.items())]
+                    data["summary"] = f"Envs: {', '.join(env_strs)}"
+
+        deployment = Deployment(
+            name="Release 1.0",
+            environments={"frontend": "PROD", "backend": "PROD", "worker": "STAGING"},
+        )
+
+        assert isinstance(deployment.environments, dict)
+        assert len(deployment.environments) == 3
+        assert deployment.environments["frontend"] == Environment.PROD
+        assert deployment.environments["backend"] == Environment.PROD
+        assert deployment.environments["worker"] == Environment.STAGING
+        assert "frontend:PROD" in deployment.summary
+
+    def test_autoenum_with_typed_nested(self):
+        """Test AutoEnum conversion with nested Typed objects."""
+
+        class Status(AutoEnum):
+            DRAFT = auto()
+            PUBLISHED = auto()
+            ARCHIVED = auto()
+
+        class Metadata(Typed):
+            author: str
+            status: Status
+            display: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "author" in data and "status" in data:
+                    # Status is already a Status enum
+                    status = data["status"]
+                    assert isinstance(status, Status)
+                    data["display"] = f"{data['author']}: {status.name}"
+
+        class Document(Typed):
+            title: str
+            metadata: Metadata
+            summary: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "metadata" in data:
+                    # Metadata is already a Metadata object
+                    meta = data["metadata"]
+                    assert isinstance(meta, Metadata)
+                    # And its status is already an enum
+                    assert isinstance(meta.status, Status)
+                    data["summary"] = f"{meta.display}"
+
+        doc = Document(title="Article", metadata={"author": "John", "status": "PUBLISHED"})
+
+        assert isinstance(doc.metadata, Metadata)
+        assert isinstance(doc.metadata.status, Status)
+        assert doc.metadata.status == Status.PUBLISHED
+        assert doc.metadata.display == "John: PUBLISHED"
+        assert doc.summary == "John: PUBLISHED"
+
 
 class TestMutableTyped:
     """Test MutableTyped functionality - mutable variant of Typed."""

@@ -2,6 +2,7 @@
 
 import functools
 import textwrap
+import typing
 from abc import ABC
 from pprint import pformat
 from typing import (
@@ -13,12 +14,16 @@ from typing import (
     Set,
     Tuple,
     TypeVar,
+    get_args,
+    get_origin,
 )
 
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator, validate_call
 from pydantic_core import PydanticUndefined
 
-from .structs import INBUILT_COLLECTIONS
+from .autoenum import AutoEnum
+from .registry import Registry
+from .structs import INBUILT_COLLECTIONS, map_collection
 
 
 def format_exception_msg(ex: Exception, short: bool = False, prefix: Optional[str] = None) -> str:
@@ -631,8 +636,6 @@ class Typed(BaseModel, ABC):
             - `morphic.autoenum.AutoEnum`: For creating fuzzy-matching registry keys
         """
         # Check if this class inherits from Registry by looking at the method resolution order
-        from morphic.registry import Registry
-
         # Check if Registry is in the MRO of this class
         if Registry in cls.__mro__:
             # This class inherits from Registry, so delegate to Registry's of method
@@ -822,11 +825,14 @@ class Typed(BaseModel, ABC):
     @classmethod
     def _convert_nested_typed_fields(cls, data: Dict):
         """
-        Convert nested dict fields to BaseModel objects before pre_initialize.
+        Convert nested dict fields to BaseModel objects and strings to AutoEnum before pre_initialize.
 
-        This method automatically converts dictionary values to their corresponding BaseModel
-        objects for fields annotated with BaseModel subclasses. This ensures that lifecycle
-        hooks always receive properly instantiated objects, not raw dictionaries.
+        This method automatically converts:
+        - Dictionary values to their corresponding BaseModel objects
+        - String values to their corresponding AutoEnum instances
+
+        This ensures that lifecycle hooks always receive properly instantiated objects,
+        not raw dictionaries or strings.
 
         Supports all Python collections (list, tuple, set, frozenset, dict) with:
             - Direct BaseModel fields: `field: MyTyped`
@@ -836,15 +842,14 @@ class Typed(BaseModel, ABC):
             - Set of BaseModel: `field: Set[MyTyped]`
             - FrozenSet of BaseModel: `field: FrozenSet[MyTyped]`
             - Dict with BaseModel values: `field: Dict[str, MyTyped]`
+            - Direct AutoEnum fields: `field: MyEnum`
+            - Optional AutoEnum fields: `field: Optional[MyEnum]`
+            - Collections of AutoEnum: `field: List[MyEnum]`, `Set[MyEnum]`, etc.
+            - Dict with AutoEnum values: `field: Dict[str, MyEnum]`
             - Nested combinations of the above
         """
         if not isinstance(data, dict):
             raise ValueError(f"data must be a dictionary, got {type(data)}")
-
-        import typing
-        from typing import get_args, get_origin
-
-        from morphic.structs import map_collection
 
         for field_name, field in cls.model_fields.items():
             if field_name not in data:
@@ -873,6 +878,7 @@ class Typed(BaseModel, ABC):
                 inner_origin = get_origin(actual_type)
                 inner_args = get_args(actual_type)
 
+                # Check for BaseModel conversions (dicts -> BaseModel instances)
                 if isinstance(actual_type, type) and issubclass(actual_type, BaseModel):
                     # Direct BaseModel field - convert directly without map_collection
                     if isinstance(value, dict):
@@ -906,6 +912,38 @@ class Typed(BaseModel, ABC):
                             return obj
 
                         data[field_name] = map_collection(value, convert_to_model, recurse=False)
+                        break
+
+                # Check for AutoEnum conversions (strings -> AutoEnum instances)
+                if isinstance(actual_type, type) and issubclass(actual_type, AutoEnum):
+                    # Direct AutoEnum field - convert string to enum
+                    if isinstance(value, str):
+                        data[field_name] = actual_type(value)
+                        break
+                elif inner_origin is dict and len(inner_args) >= 2:
+                    # Dict[K, AutoEnum] - use map_collection without recursion
+                    value_type = inner_args[1]
+                    if isinstance(value_type, type) and issubclass(value_type, AutoEnum):
+
+                        def convert_to_enum(obj):
+                            if isinstance(obj, str):
+                                return value_type(obj)
+                            return obj
+
+                        data[field_name] = map_collection(value, convert_to_enum, recurse=False)
+                        break
+                # Check if this is a collection containing AutoEnum
+                elif inner_origin in INBUILT_COLLECTIONS and len(inner_args) > 0:
+                    # Collection[AutoEnum] - use map_collection without recursion
+                    element_type = inner_args[0]
+                    if isinstance(element_type, type) and issubclass(element_type, AutoEnum):
+
+                        def convert_to_enum(obj):
+                            if isinstance(obj, str):
+                                return element_type(obj)
+                            return obj
+
+                        data[field_name] = map_collection(value, convert_to_enum, recurse=False)
                         break
 
     @model_validator(mode="before")
