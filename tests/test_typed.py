@@ -4556,6 +4556,40 @@ class TestPrivateAttributeValidation:
         # for generic types with arbitrary inner types)
         # This is acceptable behavior matching Pydantic's arbitrary_types_allowed
 
+    def test_setattr_performance(self):
+        """Test that __setattr__ is fast enough for private attributes."""
+        import time
+
+        from pydantic import PrivateAttr
+
+        class PerformanceModel(Typed):
+            name: str
+            _count: int = PrivateAttr(default=0)
+            _value: str = PrivateAttr(default="")
+            _data: Optional[int] = PrivateAttr(default=None)
+
+        model = PerformanceModel(name="test")
+
+        # Warm up the cache
+        model._count = 1
+        model._value = "warm"
+        model._data = 42
+
+        # Measure time for 10000 assignments
+        iterations = 10000
+        start = time.perf_counter()
+        for i in range(iterations):
+            model._count = i
+            model._value = str(i)
+            model._data = i * 2
+        end = time.perf_counter()
+
+        total_time = end - start
+        time_per_assignment = (total_time / (iterations * 3)) * 1_000_000  # microseconds
+
+        # With caching, should be under 5 microseconds
+        assert time_per_assignment < 5.0, f"Assignment took {time_per_assignment:.2f} µs, expected < 5.0 µs"
+
 
 class TestMutableTyped:
     """Test MutableTyped functionality - mutable variant of Typed."""

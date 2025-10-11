@@ -656,6 +656,35 @@ class Typed(BaseModel, ABC):
             # Ignore registry_key parameter if provided (for API compatibility)
             return cls(**data)
 
+    @classmethod
+    def _get_private_attr_types(cls) -> Dict[str, Any]:
+        """
+        Get cached type annotations for private attributes.
+
+        This method walks the MRO once per class and caches the result for fast lookups.
+        Child class annotations override parent annotations.
+
+        Returns:
+            Dict[str, Any]: Mapping of private attribute names to their type annotations.
+        """
+        # Check if this specific class has already cached its annotations
+        # We store the cache directly on the class (not inherited from parent)
+        cache_attr = "_annotations_cache"
+
+        # Use __dict__ to check for attribute on this specific class (not inherited)
+        if cache_attr not in cls.__dict__:
+            # Build annotations dict from MRO (base to derived, so child overrides parent)
+            annotations = {}
+            for base_cls in reversed(cls.__mro__):
+                if base_cls is object:
+                    continue
+                annotations.update(getattr(base_cls, "__annotations__", {}))
+
+            # Store directly on this class
+            setattr(cls, cache_attr, annotations)
+
+        return getattr(cls, cache_attr)
+
     @classproperty
     def class_name(cls) -> str:
         """
@@ -995,18 +1024,13 @@ class Typed(BaseModel, ABC):
         """
         # Check if private attribute validation is enabled in the model config
         # validate_private_assignment is a Typed-specific setting (separate from Pydantic's validate_assignment)
-        validate_assignment = self.model_config.get("validate_private_assignment", False)
+        validate_private_assignment = self.model_config.get("validate_private_assignment", False)
 
         # Check if this is a private attribute (starts with _ but not __)
         # and validation is enabled
-        if validate_assignment and name.startswith("_") and not name.startswith("__"):
-            # Get all type annotations from the class hierarchy
-            # Process in reverse order so child annotations override parent annotations
-            annotations = {}
-            for cls in reversed(type(self).__mro__):
-                if cls is object:
-                    continue
-                annotations.update(getattr(cls, "__annotations__", {}))
+        if validate_private_assignment and name.startswith("_") and not name.startswith("__"):
+            # Get cached type annotations for this class (computed once per class, not per instance)
+            annotations = type(self)._get_private_attr_types()
 
             # If this private attribute has a type annotation, validate it
             if name in annotations:
@@ -1014,11 +1038,33 @@ class Typed(BaseModel, ABC):
 
                 # Try to validate the value against the expected type
                 try:
-                    # Use Pydantic's TypeAdapter for validation
+                    # Use cached TypeAdapter for validation to avoid recreating it
                     # This ensures we use the same validation logic as regular fields
                     # Note: ConfigDict is not directly supported in TypeAdapter constructor,
                     # so we handle arbitrary types via exception handling
-                    type_adapter = TypeAdapter(expected_type)
+
+                    # Get or create TypeAdapter cache on this specific class
+                    cls = type(self)
+                    cache_attr = "_type_adapter_cache"
+                    if cache_attr not in cls.__dict__:
+                        setattr(cls, cache_attr, {})
+
+                    cache = getattr(cls, cache_attr)
+
+                    # Use type as cache key (hashable)
+                    if expected_type not in cache:
+                        try:
+                            cache[expected_type] = TypeAdapter(expected_type)
+                        except PydanticSchemaGenerationError:
+                            # Cache None to indicate this type cannot be validated by TypeAdapter
+                            cache[expected_type] = None
+
+                    type_adapter = cache[expected_type]
+
+                    # If cached value is None, it means TypeAdapter creation failed previously
+                    if type_adapter is None:
+                        raise PydanticSchemaGenerationError("Cached: Cannot create TypeAdapter for this type")
+
                     validated_value = type_adapter.validate_python(value)
                     # Use the validated value (which may have been coerced)
                     value = validated_value
