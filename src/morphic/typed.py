@@ -969,15 +969,19 @@ class Typed(BaseModel, ABC):
 
         ## Call pre_initialize for each superclass in MRO (base to derived)
         ## Only call methods that are defined directly on each class to avoid duplicates
+        ## Pass cls (the actual subclass) as context so class variables are accessible
         for base_cls in reversed(cls.__mro__[:-1]):  # Exclude object
             if "pre_initialize" in base_cls.__dict__ and base_cls is not BaseModel:
-                base_cls.pre_initialize(data)
+                # Get the unbound function and call with cls as the first argument
+                base_cls.__dict__["pre_initialize"].__func__(cls, data)
 
         ## Call pre_validate for each superclass in MRO (base to derived)
         ## Only call methods that are defined directly on each class to avoid duplicates
+        ## Pass cls (the actual subclass) as context so class variables are accessible
         for base_cls in reversed(cls.__mro__[:-1]):  # Exclude object
             if "pre_validate" in base_cls.__dict__ and base_cls is not BaseModel:
-                base_cls.pre_validate(data)
+                # Get the unbound function and call with cls as the first argument
+                base_cls.__dict__["pre_validate"].__func__(cls, data)
 
         return data
 
@@ -1456,15 +1460,19 @@ class Typed(BaseModel, ABC):
     def post_set_validate_inputs(self) -> NoReturn:
         ## Call post_initialize for each class in MRO (base to derived order)
         ## Only call methods that are defined directly on each class to avoid duplicates
+        ## Get the unbound function to ensure proper context
         for base_cls in reversed(self.__class__.__mro__[:-1]):  # Exclude object
             if "post_initialize" in base_cls.__dict__ and base_cls is not BaseModel:
-                base_cls.post_initialize(self)
+                # Get the unbound function and call with self
+                base_cls.__dict__["post_initialize"](self)
 
         ## Call post_validate for each class in MRO (base to derived order)
         ## Only call methods that are defined directly on each class to avoid duplicates
+        ## Get the unbound function to ensure proper context
         for base_cls in reversed(self.__class__.__mro__[:-1]):  # Exclude object
             if "post_validate" in base_cls.__dict__ and base_cls is not BaseModel:
-                base_cls.post_validate(self)
+                # Get the unbound function and call with self
+                base_cls.__dict__["post_validate"](self)
 
     def post_initialize(self) -> NoReturn:
         """

@@ -4068,6 +4068,36 @@ class TestNestedTypedWithHooks:
         assert doc.metadata.display == "John: PUBLISHED"
         assert doc.summary == "John: PUBLISHED"
 
+    def test_class_variable_access_in_parent_hook(self):
+        """Test that parent hooks can access class variables defined in child class."""
+        from typing import ClassVar
+
+        class Parent(Typed):
+            name: str
+            computed: Optional[str] = None
+            # Class variable declared but not assigned
+            multiplier: ClassVar[int]
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "name" in data:
+                    # This should access the child's multiplier, not cause an error
+                    data["computed"] = f"{data['name']} x {cls.multiplier}"
+
+        class Child(Parent):
+            # Class variable assigned in child
+            multiplier: ClassVar[int] = 10
+
+        # This should work - parent's hook should see child's class variable
+        child = Child(name="test")
+        assert child.computed == "test x 10"
+
+        class AnotherChild(Parent):
+            multiplier: ClassVar[int] = 5
+
+        another = AnotherChild(name="another")
+        assert another.computed == "another x 5"
+
 
 class TestMutableTyped:
     """Test MutableTyped functionality - mutable variant of Typed."""
