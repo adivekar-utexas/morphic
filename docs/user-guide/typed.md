@@ -2353,6 +2353,367 @@ processed = transform_data(
 )
 ```
 
+## Private Attribute Validation
+
+Typed provides automatic validation for private attributes (those prefixed with `_`) when `validate_private_assignment=True`. This ensures type safety for private attributes used for internal state management, caching, or computed values.
+
+### Overview
+
+By default, Pydantic does not validate private attributes defined with `PrivateAttr()`. However, `Typed` extends this behavior to provide automatic validation when the model has `validate_private_assignment=True` enabled (which is the default for `Typed`).
+
+**Key Features:**
+- Automatic validation of private attributes against their type annotations
+- Type coercion works the same as for public fields
+- Supports all Pydantic types: primitives, Optional, Union, collections, nested Typed models
+- Supports arbitrary types (like `threading.Thread`, custom classes) with isinstance checks
+- Respects the `validate_private_assignment` configuration setting
+- Untyped private attributes (no type hint) remain unvalidated for flexibility
+
+### Basic Usage
+
+```python
+from pydantic import PrivateAttr
+from morphic import Typed
+
+class Counter(Typed):
+    name: str
+    _count: int = PrivateAttr(default=0)
+    _cache: Optional[str] = PrivateAttr(default=None)
+    
+    def post_initialize(self) -> None:
+        # Private attributes are validated when set
+        self._count = 10  # ✓ Valid: int
+        self._cache = "cached_value"  # ✓ Valid: str
+
+counter = Counter(name="MyCounter")
+
+# Can modify private attributes (unlike public fields which are frozen)
+counter._count = 20  # ✓ Valid: int value
+counter._count = "42"  # ✓ Valid: string coerced to int(42)
+
+# Invalid assignments raise ValueError with detailed error message
+try:
+    counter._count = "invalid"  # ✗ Cannot convert to int
+except ValueError as e:
+    print(e)
+    # Output: Cannot set private attribute '_count'. Expected type: int, got value of type str...
+```
+
+### Type Coercion
+
+Private attributes benefit from the same type coercion as public fields:
+
+```python
+class Model(Typed):
+    name: str
+    _score: float = PrivateAttr(default=0.0)
+    _active: bool = PrivateAttr(default=False)
+    _tags: List[str] = PrivateAttr(default_factory=list)
+
+model = Model(name="test")
+
+# Type coercion works automatically
+model._score = "3.14"  # String → float(3.14)
+model._active = "true"  # String → bool (Pydantic conversion)
+model._tags = ["tag1", "tag2"]  # List validation with element coercion
+```
+
+### Complex Types
+
+Private attributes support all Pydantic type annotations:
+
+```python
+from typing import Optional, Union, List, Dict
+
+class System(Typed):
+    name: str
+    
+    # Optional types
+    _config: Optional[Dict[str, str]] = PrivateAttr(default=None)
+    
+    # Union types
+    _value: Union[int, str] = PrivateAttr(default=0)
+    
+    # Collections
+    _items: List[int] = PrivateAttr(default_factory=list)
+    
+    # Nested Typed models
+    _metadata: Optional["ConfigModel"] = PrivateAttr(default=None)
+
+system = System(name="MySystem")
+
+# All types are validated
+system._config = {"key": "value"}  # ✓ Valid
+system._value = 42  # ✓ Valid: int
+system._value = "hello"  # ✓ Valid: str (Union allows both)
+system._items = ["1", "2", "3"]  # ✓ Valid: strings coerced to ints
+system._metadata = {"setting": "value"}  # ✓ Valid: dict converted to ConfigModel
+```
+
+### Nested Typed Models
+
+Private attributes can hold nested Typed models with automatic conversion:
+
+```python
+class Config(Typed):
+    host: str
+    port: int
+
+class Service(Typed):
+    name: str
+    _config: Optional[Config] = PrivateAttr(default=None)
+    
+    def post_initialize(self) -> None:
+        # Set initial configuration
+        self._config = {"host": "localhost", "port": 8080}
+
+service = Service(name="API")
+
+# Dict automatically converted to Config instance
+assert isinstance(service._config, Config)
+assert service._config.host == "localhost"
+
+# Can also set Config instances directly
+service._config = Config(host="0.0.0.0", port=9000)
+```
+
+### Arbitrary Types
+
+Private attributes support arbitrary types (like `threading.Thread`, custom classes, etc.) that Pydantic can't automatically validate. When Pydantic's TypeAdapter cannot create a schema for a type, Typed falls back to simple `isinstance()` checks:
+
+```python
+import threading
+from pydantic import PrivateAttr
+
+class ThreadManager(Typed):
+    name: str
+    _thread: Optional[threading.Thread] = PrivateAttr(default=None)
+    _worker_thread: Optional[threading.Thread] = PrivateAttr(default=None)
+    
+    def post_initialize(self) -> None:
+        # Can set arbitrary types like Thread
+        self._thread = threading.Thread(target=lambda: None)
+        self._worker_thread = threading.Thread(target=self.work)
+    
+    def work(self):
+        print("Working...")
+
+manager = ThreadManager(name="BackgroundManager")
+
+# Arbitrary types are validated with isinstance()
+assert isinstance(manager._thread, threading.Thread)
+
+# Can modify private attributes
+new_thread = threading.Thread(target=lambda: print("New task"))
+manager._thread = new_thread  # ✓ Valid: Thread instance
+
+# Type checking still enforced
+try:
+    manager._thread = "not a thread"  # ✗ TypeError
+except ValueError as e:
+    print(e)  # Error: Expected type: Thread, got value of type str
+```
+
+**How It Works:**
+1. Typed first tries to use Pydantic's TypeAdapter for validation
+2. If TypeAdapter can't create a schema (for arbitrary types), falls back to:
+   - For concrete types (like `threading.Thread`): simple `isinstance()` check
+   - For `Optional[ArbitraryType]`: checks for None or isinstance of the inner type
+   - For other generic types with arbitrary inner types: no validation (too complex without TypeAdapter)
+
+**Supported Patterns:**
+- Direct arbitrary types: `_thread: threading.Thread`
+- Optional arbitrary types: `_thread: Optional[threading.Thread]`
+- Union of arbitrary types: `_resource: Union[ThreadType, ProcessType]` (with isinstance checks)
+
+### Untyped Private Attributes
+
+Private attributes without type hints are not validated, providing flexibility:
+
+```python
+class FlexibleModel(Typed):
+    name: str
+    
+    def post_initialize(self) -> None:
+        # No type annotation = no validation
+        self._anything = "string"
+
+model = FlexibleModel(name="test")
+
+# Can set to any type - no validation
+model._anything = "string"
+model._anything = 123
+model._anything = [1, 2, 3]
+model._anything = {"key": "value"}
+```
+
+### Configuration Control
+
+Private attribute validation respects the `validate_private_assignment` configuration:
+
+```python
+from pydantic import ConfigDict, PrivateAttr
+
+# Validation enabled (default for Typed)
+class ValidatedModel(Typed):
+    name: str
+    _count: int = PrivateAttr(default=0)
+
+model = ValidatedModel(name="test")
+model._count = 42  # ✓ Validated
+# model._count = "invalid"  # ✗ Raises ValueError
+
+# Validation disabled
+class UnvalidatedModel(Typed):
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        validate_private_assignment=False,  # Disable private attribute validation
+    )
+    
+    name: str
+    _count: int = PrivateAttr(default=0)
+
+model2 = UnvalidatedModel(name="test")
+model2._count = "anything"  # ✓ No validation (assignment allowed)
+```
+
+**Note:** This is separate from Pydantic's `validate_assignment` setting, which controls validation of **public** field assignments. For `Typed` (frozen models), `validate_assignment` is not needed since public fields cannot be modified. For `MutableTyped`, `validate_assignment=True` enables validation of public field modifications.
+
+### Inheritance
+
+Private attribute validation works across inheritance hierarchies:
+
+```python
+class Parent(Typed):
+    name: str
+    _parent_data: int = PrivateAttr(default=0)
+
+class Child(Parent):
+    age: int
+    _child_data: str = PrivateAttr(default="")
+
+child = Child(name="test", age=10)
+
+# Both parent and child private attributes are validated
+child._parent_data = 42  # ✓ Valid: int
+child._child_data = "data"  # ✓ Valid: str
+
+# Both enforce their types
+# child._parent_data = "invalid"  # ✗ ValueError
+# child._child_data = 123  # ✗ ValueError
+```
+
+Child classes can override parent private attribute types:
+
+```python
+class Parent(Typed):
+    name: str
+    _value: int = PrivateAttr(default=0)
+
+class Child(Parent):
+    age: int
+    _value: str = PrivateAttr(default="")  # Override with different type
+
+child = Child(name="test", age=10)
+
+# Child's type annotation takes precedence
+child._value = "hello"  # ✓ Valid: str (child's type)
+# child._value = 123  # ✗ ValueError (child expects str)
+```
+
+### Using with post_initialize
+
+Private attributes are commonly set in `post_initialize` hooks:
+
+```python
+class Rectangle(Typed):
+    width: int
+    height: int
+    _area: int = PrivateAttr()
+    _perimeter: int = PrivateAttr()
+    
+    def post_initialize(self) -> None:
+        # Compute derived values - all validated
+        self._area = self.width * self.height
+        self._perimeter = 2 * (self.width + self.height)
+
+rect = Rectangle(width=5, height=3)
+assert rect._area == 15
+assert rect._perimeter == 16
+
+# Can update computed values later
+rect._area = 20  # ✓ Valid: int
+```
+
+### Error Messages
+
+Validation errors provide detailed information:
+
+```python
+from pydantic import PrivateAttr
+
+class Model(Typed):
+    name: str
+    _count: int = PrivateAttr(default=0)
+
+model = Model(name="test")
+
+try:
+    model._count = "invalid"
+except ValueError as e:
+    print(e)
+    # Output:
+    # Cannot set private attribute '_count'.
+    # Expected type: int, got value of type str: 'invalid'
+    # Validation errors:
+    # Input should be a valid integer, unable to parse string as an integer
+```
+
+### Best Practices
+
+1. **Use Type Hints**: Always provide type annotations for private attributes you want validated
+2. **Leverage Defaults**: Use `PrivateAttr(default=...)` or `PrivateAttr(default_factory=...)` for initialization
+3. **Computed Values**: Set derived values in `post_initialize` or `pre_initialize` hooks
+4. **Respect Configuration**: Models can opt out with `validate_private_assignment=False` if needed
+5. **Untyped Flexibility**: Omit type hints for truly dynamic private attributes
+
+### When to Use Private Attribute Validation
+
+**Good Use Cases:**
+- Caching computed values with type safety
+- Internal state management requiring validation
+- Derived fields that depend on multiple public fields
+- Memoization of expensive operations
+
+**Consider Alternatives:**
+- For truly dynamic values, use untyped private attributes
+- For public API, use regular fields (with `frozen=False` via `MutableTyped`)
+- For complex validation, use `post_validate` hooks instead
+
+### MutableTyped and Private Attributes
+
+`MutableTyped` also validates private attributes by default (inherits `validate_private_assignment=True` from `Typed`):
+
+```python
+class MutableCounter(MutableTyped):
+    name: str
+    _count: int = PrivateAttr(default=0)
+
+counter = MutableCounter(name="test")
+
+# Private attributes validated (via validate_private_assignment=True)
+counter._count = 10  # ✓ Valid
+# counter._count = "invalid"  # ✗ ValueError
+
+# Public fields can also be modified (via validate_assignment=True for MutableTyped)
+counter.name = "updated"  # ✓ Valid (MutableTyped allows and validates this)
+```
+
+**Configuration Summary:**
+- `Typed`: `frozen=True`, `validate_private_assignment=True` (private attrs validated, public fields frozen)
+- `MutableTyped`: `frozen=False`, `validate_assignment=True`, `validate_private_assignment=True` (both public and private validated)
+
 ## Choosing Between Typed and MutableTyped
 
 ### When to Use Typed (Immutable)

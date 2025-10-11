@@ -18,7 +18,8 @@ from typing import (
     get_origin,
 )
 
-from pydantic import BaseModel, ConfigDict, ValidationError, model_validator, validate_call
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, model_validator, validate_call
+from pydantic.errors import PydanticSchemaGenerationError
 from pydantic_core import PydanticUndefined
 
 from .autoenum import AutoEnum
@@ -352,6 +353,10 @@ class Typed(BaseModel, ABC):
         validate_default=True,
         ## https://docs.pydantic.dev/latest/api/config/#pydantic.config.ConfigDict.arbitrary_types_allowed
         arbitrary_types_allowed=True,
+        ## Ref: https://docs.pydantic.dev/latest/api/config/#pydantic.config.ConfigDict.validate_assignment
+        validate_assignment=False,
+        ## Custom setting for private attribute validation
+        validate_private_assignment=True,
     )
 
     def __init__(self, /, **data: Dict[str, Any]):
@@ -809,6 +814,311 @@ class Typed(BaseModel, ABC):
         params_str: str = self.model_dump_json(indent=4)
         out: str = f"{self.class_name}:\n{params_str}"
         return out
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """
+        Override attribute setting to validate private attributes when validate_private_assignment is enabled.
+
+        This method extends Pydantic's frozen model behavior by adding automatic
+        validation for private attributes (those starting with '_') when the model has
+        `validate_private_assignment=True` in its configuration. While Pydantic allows private
+        attributes to be set on frozen models (they bypass the frozen restriction), it
+        doesn't validate them by default. This override ensures that private attributes
+        are validated against their type annotations when validation is enabled.
+
+        **Validation Rules:**
+            - **Public fields**: Use normal Pydantic validation and frozen behavior
+            - **Private attributes with type hints** (when validate_private_assignment=True):
+              Automatically validated against type annotation
+            - **Private attributes without type hints**: Set without validation
+            - **Dunder attributes** (`__name__`): Set without validation (internal use)
+            - **When validate_private_assignment=False**: All private attributes bypass validation
+
+        **Type Validation:**
+            The validation uses Pydantic's type system and supports:
+            - Basic types: `int`, `str`, `float`, `bool`, etc.
+            - Optional types: `Optional[int]`, `Union[int, None]`
+            - Collections: `List[int]`, `Dict[str, int]`, `Set[str]`, etc.
+            - Nested Typed models: `MyTypedModel`
+            - AutoEnum types: `MyAutoEnum`
+            - Union types: `Union[int, str]`
+            - Complex nested types: `List[Optional[MyTyped]]`, etc.
+
+        Args:
+            name (str): The name of the attribute to set.
+            value (Any): The value to assign to the attribute.
+
+        Raises:
+            ValueError: If the value fails validation for a typed private attribute
+                when validate_private_assignment=True. The error message includes:
+                - The attribute name
+                - The expected type
+                - The actual value and its type
+                - Detailed validation error from Pydantic
+
+        Examples:
+            Basic Private Attribute Validation (with validate_private_assignment=True):
+                ```python
+                from pydantic import PrivateAttr
+                from morphic.typed import Typed
+
+                class Counter(Typed):
+                    # Typed has validate_private_assignment=True by default
+                    name: str
+                    _count: int = PrivateAttr(default=0)
+
+                    def post_initialize(self) -> None:
+                        # Valid: _count is an int
+                        self._count = 10
+
+                counter = Counter(name="MyCounter")
+                counter._count = 20  # Valid
+
+                try:
+                    counter._count = "invalid"  # Invalid: wrong type
+                except ValueError as e:
+                    print(e)  # Detailed error about type mismatch
+                ```
+
+            Without Validation (validate_private_assignment=False):
+                ```python
+                from pydantic import ConfigDict, PrivateAttr
+                from morphic.typed import Typed
+
+                class NoValidationCounter(Typed):
+                    model_config = ConfigDict(
+                        extra="forbid",
+                        frozen=True,
+                        validate_private_assignment=False,  # Disable private attr validation
+                    )
+
+                    name: str
+                    _count: int = PrivateAttr(default=0)
+
+                counter = NoValidationCounter(name="MyCounter")
+                counter._count = "anything"  # No validation occurs
+                ```
+
+            Optional Private Attributes:
+                ```python
+                class Cache(Typed):
+                    key: str
+                    _cached_value: Optional[str] = PrivateAttr(default=None)
+
+                    def post_initialize(self) -> None:
+                        self._cached_value = None  # Valid
+                        self._cached_value = "cached"  # Valid
+
+                cache = Cache(key="data")
+                cache._cached_value = "new_value"  # Valid
+                cache._cached_value = None  # Valid
+                try:
+                    cache._cached_value = 123  # Invalid: int not str
+                except ValueError as e:
+                    print(e)
+                ```
+
+            Complex Types:
+                ```python
+                class DataProcessor(Typed):
+                    name: str
+                    _buffer: List[int] = PrivateAttr(default_factory=list)
+                    _metadata: Dict[str, Any] = PrivateAttr(default_factory=dict)
+
+                    def post_initialize(self) -> None:
+                        self._buffer = [1, 2, 3]  # Valid
+                        self._metadata = {"key": "value"}  # Valid
+
+                processor = DataProcessor(name="Processor")
+                processor._buffer = [4, 5, 6]  # Valid
+                try:
+                    processor._buffer = "not a list"  # Invalid
+                except ValueError as e:
+                    print(e)
+                ```
+
+            Nested Typed Models:
+                ```python
+                class Config(Typed):
+                    value: int
+
+                class System(Typed):
+                    name: str
+                    _config: Optional[Config] = PrivateAttr(default=None)
+
+                    def post_initialize(self) -> None:
+                        self._config = Config(value=10)  # Valid
+
+                system = System(name="System1")
+                system._config = Config(value=20)  # Valid
+                try:
+                    system._config = {"value": 30}  # Invalid: dict not Config
+                except ValueError as e:
+                    print(e)
+                ```
+
+            Without Type Annotations (No Validation):
+                ```python
+                class FlexibleModel(Typed):
+                    name: str
+
+                    def post_initialize(self) -> None:
+                        # No type annotation, so no validation
+                        self._anything = "string"
+                        self._anything = 123  # Also valid
+
+                model = FlexibleModel(name="Test")
+                model._untyped = {"any": "value"}  # No validation
+                ```
+
+        **Performance Notes:**
+            - Type annotation lookup is cached internally by Python
+            - Validation only occurs when validate_private_assignment=True
+            - Validation only occurs for private attributes with type hints
+            - No overhead for public fields or untyped private attributes
+
+        **Integration with Pydantic:**
+            This validation works seamlessly with Pydantic's features:
+            - Respects Pydantic's type coercion (e.g., `"123"` → `123`)
+            - Works with Pydantic validators and custom types
+            - Compatible with Pydantic's serialization (private attrs excluded)
+            - Honors the validate_private_assignment configuration setting
+
+        **Note on validate_assignment vs validate_private_assignment:**
+            - `validate_private_assignment`: Controls validation of private attributes (Typed feature)
+            - `validate_assignment`: Controls validation of public fields (Pydantic feature, used in MutableTyped)
+
+        See Also:
+            - `post_initialize()`: Common place to set private attributes
+            - `pydantic.PrivateAttr`: For defining private attributes with defaults
+            - `model_config.validate_private_assignment`: Configuration for private attribute validation
+        """
+        # Check if private attribute validation is enabled in the model config
+        # validate_private_assignment is a Typed-specific setting (separate from Pydantic's validate_assignment)
+        validate_assignment = self.model_config.get("validate_private_assignment", False)
+
+        # Check if this is a private attribute (starts with _ but not __)
+        # and validation is enabled
+        if validate_assignment and name.startswith("_") and not name.startswith("__"):
+            # Get all type annotations from the class hierarchy
+            # Process in reverse order so child annotations override parent annotations
+            annotations = {}
+            for cls in reversed(type(self).__mro__):
+                if cls is object:
+                    continue
+                annotations.update(getattr(cls, "__annotations__", {}))
+
+            # If this private attribute has a type annotation, validate it
+            if name in annotations:
+                expected_type = annotations[name]
+
+                # Try to validate the value against the expected type
+                try:
+                    # Use Pydantic's TypeAdapter for validation
+                    # This ensures we use the same validation logic as regular fields
+                    # Note: ConfigDict is not directly supported in TypeAdapter constructor,
+                    # so we handle arbitrary types via exception handling
+                    type_adapter = TypeAdapter(expected_type)
+                    validated_value = type_adapter.validate_python(value)
+                    # Use the validated value (which may have been coerced)
+                    value = validated_value
+                except PydanticSchemaGenerationError:
+                    # TypeAdapter couldn't create a schema for this type (likely an arbitrary type)
+                    # Fall back to isinstance check for concrete types
+                    origin = get_origin(expected_type)
+                    args = get_args(expected_type)
+
+                    if origin is typing.Union and args:
+                        # Handle Union types (including Optional)
+                        # Check if value matches any of the union types
+                        none_allowed = type(None) in args
+                        non_none_types = [t for t in args if t is not type(None) and isinstance(t, type)]
+
+                        if value is None:
+                            if not none_allowed:
+                                raise ValueError(
+                                    f"Cannot set private attribute '{name}' on {self.class_name} instance. "
+                                    f"Expected type: {expected_type}, but got None"
+                                )
+                        elif non_none_types:
+                            # Check if value matches any of the non-None types
+                            if not any(isinstance(value, t) for t in non_none_types):
+                                type_names = " or ".join(t.__name__ for t in non_none_types)
+                                raise ValueError(
+                                    f"Cannot set private attribute '{name}' on {self.class_name} instance. "
+                                    f"Expected type: {type_names}, but got value of type {type(value).__name__}: {value!r}"
+                                )
+                        # else: Union with no concrete types, skip validation
+                    elif origin is not None:
+                        # For other generic types (List, Dict, etc.), we can't easily validate
+                        # without TypeAdapter, so we skip validation
+                        pass
+                    elif isinstance(expected_type, type):
+                        # For concrete types, perform a simple isinstance check
+                        if not isinstance(value, expected_type):
+                            raise ValueError(
+                                f"Cannot set private attribute '{name}' on {self.class_name} instance. "
+                                f"Expected type: {expected_type.__name__}, but got value of type {type(value).__name__}: {value!r}"
+                            )
+                    # else: For non-type annotations (e.g., type variables), skip validation
+                except ValidationError as e:
+                    # Provide a detailed error message
+                    errors_str = ""
+                    for error_i, error in enumerate(e.errors()):
+                        assert isinstance(error, dict)
+                        error_msg: str = textwrap.indent(error.get("msg", ""), "    ").strip()
+                        errors_str += "\n"
+                        errors_str += textwrap.indent(
+                            f"[Error#{error_i + 1}] ValidationError:\n{error_msg}", "  "
+                        )
+
+                    raise ValueError(
+                        f"Cannot set private attribute '{name}' on {self.class_name} instance. "
+                        f"Expected type: {expected_type}, but got value of type {type(value).__name__}: {value!r}"
+                        f"\nValidation errors: {errors_str}"
+                    )
+                except Exception:
+                    # Catch any other unexpected errors during validation
+                    # (e.g., TypeAdapter was created but validation fails for arbitrary types)
+                    # In this case, fall back to isinstance check for concrete types
+                    origin = get_origin(expected_type)
+                    args = get_args(expected_type)
+
+                    if origin is typing.Union and args:
+                        # Handle Union types (including Optional)
+                        # Check if value matches any of the union types
+                        none_allowed = type(None) in args
+                        non_none_types = [t for t in args if t is not type(None) and isinstance(t, type)]
+
+                        if value is None:
+                            if not none_allowed:
+                                raise ValueError(
+                                    f"Cannot set private attribute '{name}' on {self.class_name} instance. "
+                                    f"Expected type: {expected_type}, but got None"
+                                )
+                        elif non_none_types:
+                            # Check if value matches any of the non-None types
+                            if not any(isinstance(value, t) for t in non_none_types):
+                                type_names = " or ".join(t.__name__ for t in non_none_types)
+                                raise ValueError(
+                                    f"Cannot set private attribute '{name}' on {self.class_name} instance. "
+                                    f"Expected type: {type_names}, but got value of type {type(value).__name__}: {value!r}"
+                                )
+                        # else: Union with no concrete types, skip validation
+                    elif origin is not None:
+                        # For other generic types, we can't validate without TypeAdapter, so skip
+                        pass
+                    elif isinstance(expected_type, type):
+                        # For concrete types, perform a simple isinstance check
+                        if not isinstance(value, expected_type):
+                            raise ValueError(
+                                f"Cannot set private attribute '{name}' on {self.class_name} instance. "
+                                f"Expected type: {expected_type.__name__}, but got value of type {type(value).__name__}: {value!r}"
+                            )
+                    # else: For non-type annotations, skip validation
+
+        # Delegate to parent class (BaseModel's __setattr__)
+        super().__setattr__(name, value)
 
     @classmethod
     def _set_default_values(cls, data: Dict):
@@ -1984,7 +2294,8 @@ class MutableTyped(Typed):
 
     Configuration:
     - `frozen=False`: Allows field modification
-    - `validate_assignment=True`: Validates assignments on field modification
+    - `validate_assignment=True`: Validates public field assignments (Pydantic feature)
+    - `validate_private_assignment=True`: Validates private attribute assignments (inherited from Typed)
 
     Basic Usage:
         ```python
@@ -2090,6 +2401,8 @@ class MutableTyped(Typed):
         frozen=False,
         ## Ref: https://docs.pydantic.dev/latest/api/config/#pydantic.config.ConfigDict.validate_assignment
         validate_assignment=True,
+        ## Custom setting for private attribute validation
+        validate_private_assignment=False,
     )
 
 

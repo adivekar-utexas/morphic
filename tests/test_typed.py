@@ -4099,6 +4099,432 @@ class TestNestedTypedWithHooks:
         assert another.computed == "another x 5"
 
 
+class TestPrivateAttributeValidation:
+    """Test private attribute validation in Typed models.
+
+    Private attributes (prefixed with _) are validated when validate_assignment=True.
+    Typed has validate_assignment=True by default, so private attributes are validated
+    automatically. Models can opt out by setting validate_assignment=False.
+    """
+
+    def test_int_private_attr_valid(self):
+        """Test that valid int values are accepted."""
+        from pydantic import PrivateAttr
+
+        class Counter(Typed):
+            name: str
+            _count: int = PrivateAttr(default=0)
+
+            def post_initialize(self) -> None:
+                self._count = 10
+
+        counter = Counter(name="test")
+        assert counter._count == 10
+
+        # Should also allow setting after initialization
+        counter._count = 20
+        assert counter._count == 20
+
+    def test_int_private_attr_invalid(self):
+        """Test that invalid int values raise ValueError."""
+        from pydantic import PrivateAttr
+
+        class Counter(Typed):
+            name: str
+            _count: int = PrivateAttr(default=0)
+
+        counter = Counter(name="test")
+
+        # Try to set invalid type
+        with pytest.raises(ValueError) as exc_info:
+            counter._count = "invalid"
+
+        error_msg = str(exc_info.value)
+        assert "Cannot set private attribute '_count'" in error_msg
+        assert "Expected type:" in error_msg
+        assert "int" in error_msg
+
+    def test_int_private_attr_type_coercion(self):
+        """Test that Pydantic type coercion works for private attrs."""
+        from pydantic import PrivateAttr
+
+        class Counter(Typed):
+            name: str
+            _count: int = PrivateAttr(default=0)
+
+        counter = Counter(name="test")
+
+        # String that can be coerced to int should work
+        counter._count = "42"
+        assert counter._count == 42
+        assert isinstance(counter._count, int)
+
+    def test_str_private_attr(self):
+        """Test string private attribute validation."""
+        from pydantic import PrivateAttr
+
+        class Model(Typed):
+            id: int
+            _label: str = PrivateAttr(default="")
+
+            def post_initialize(self) -> None:
+                self._label = "test"
+
+        model = Model(id=1)
+        assert model._label == "test"
+
+        model._label = "updated"
+        assert model._label == "updated"
+
+        # Invalid type should fail
+        with pytest.raises(ValueError):
+            model._label = 123
+
+    def test_optional_private_attr(self):
+        """Test Optional[int] private attribute."""
+        from pydantic import PrivateAttr
+
+        class Model(Typed):
+            name: str
+            _value: Optional[int] = PrivateAttr(default=None)
+
+        model = Model(name="test")
+        assert model._value is None
+
+        model._value = 42
+        assert model._value == 42
+
+        model._value = None
+        assert model._value is None
+
+        # Invalid type should fail
+        with pytest.raises(ValueError):
+            model._value = "invalid"
+
+    def test_list_private_attr(self):
+        """Test List[int] private attribute."""
+        from pydantic import PrivateAttr
+
+        class Model(Typed):
+            name: str
+            _items: List[int] = PrivateAttr(default_factory=list)
+
+        model = Model(name="test")
+        assert model._items == []
+
+        model._items = [1, 2, 3]
+        assert model._items == [1, 2, 3]
+
+        # Type coercion in list elements
+        model._items = ["4", "5", "6"]
+        assert model._items == [4, 5, 6]
+
+        # Invalid element type
+        with pytest.raises(ValueError):
+            model._items = [1, "invalid", 3]
+
+    def test_nested_typed_private_attr(self):
+        """Test private attribute with nested Typed model."""
+        from pydantic import PrivateAttr
+
+        class Config(Typed):
+            value: int
+
+        class System(Typed):
+            name: str
+            _config: Optional[Config] = PrivateAttr(default=None)
+
+        system = System(name="System1")
+        assert system._config is None
+
+        # Set valid Config instance
+        system._config = Config(value=10)
+        assert system._config.value == 10
+
+        # Pydantic should convert dict to Config
+        system._config = {"value": 20}
+        assert isinstance(system._config, Config)
+        assert system._config.value == 20
+
+        # Invalid type
+        with pytest.raises(ValueError):
+            system._config = "not_a_config"
+
+    def test_union_private_attr(self):
+        """Test Union[int, str] private attribute."""
+        from pydantic import PrivateAttr
+
+        class Model(Typed):
+            name: str
+            _value: Union[int, str] = PrivateAttr(default=0)
+
+        model = Model(name="test")
+
+        # Both int and str should work
+        model._value = 42
+        assert model._value == 42
+
+        model._value = "hello"
+        assert model._value == "hello"
+
+        # Invalid type
+        with pytest.raises(ValueError):
+            model._value = [1, 2, 3]
+
+    def test_untyped_private_attr_no_validation(self):
+        """Test that private attributes without type hints have no validation."""
+
+        class FlexibleModel(Typed):
+            name: str
+
+            def post_initialize(self) -> None:
+                # No type annotation, so no validation
+                self._anything = "string"
+
+        model = FlexibleModel(name="test")
+        assert model._anything == "string"
+
+        # Should allow any type since it's untyped
+        model._anything = 123
+        assert model._anything == 123
+
+        model._anything = [1, 2, 3]
+        assert model._anything == [1, 2, 3]
+
+    def test_inherited_private_attrs(self):
+        """Test that private attributes from parent classes are validated."""
+        from pydantic import PrivateAttr
+
+        class Parent(Typed):
+            name: str
+            _parent_count: int = PrivateAttr(default=0)
+
+        class Child(Parent):
+            age: int
+            _child_count: int = PrivateAttr(default=0)
+
+        child = Child(name="test", age=10)
+
+        # Both parent and child private attrs should validate
+        child._parent_count = 5
+        assert child._parent_count == 5
+
+        child._child_count = 10
+        assert child._child_count == 10
+
+        # Both should validate types
+        with pytest.raises(ValueError):
+            child._parent_count = "invalid"
+
+        with pytest.raises(ValueError):
+            child._child_count = "invalid"
+
+    def test_overridden_private_attr_annotation(self):
+        """Test that child can override parent's private attr annotation."""
+        from pydantic import PrivateAttr
+
+        class Parent(Typed):
+            name: str
+            _value: int = PrivateAttr(default=0)
+
+        class Child(Parent):
+            age: int
+            _value: str = PrivateAttr(default="")  # Override with different type
+
+        child = Child(name="test", age=10)
+
+        # Should validate against child's annotation (str)
+        child._value = "hello"
+        assert child._value == "hello"
+
+        # Should fail int validation (child's type is str)
+        with pytest.raises(ValueError):
+            child._value = 123
+
+    def test_setting_in_post_initialize(self):
+        """Test private attribute validation in post_initialize hook."""
+        from pydantic import PrivateAttr
+
+        class Model(Typed):
+            value: int
+            _doubled: int = PrivateAttr()
+
+            def post_initialize(self) -> NoReturn:
+                # Should validate the assignment
+                self._doubled = self.value * 2
+
+        model = Model(value=5)
+        assert model._doubled == 10
+
+    def test_with_validate_assignment_true(self):
+        """Test that validation occurs when validate_assignment=True."""
+        from pydantic import ConfigDict, PrivateAttr
+
+        class Model(Typed):
+            model_config = ConfigDict(
+                extra="forbid",
+                frozen=True,
+                validate_assignment=True,
+            )
+
+            name: str
+            _count: int = PrivateAttr(default=0)
+
+        model = Model(name="test")
+        model._count = 42  # Valid
+        assert model._count == 42
+
+        # Invalid type should fail
+        with pytest.raises(ValueError) as exc_info:
+            model._count = "invalid"
+
+        assert "Cannot set private attribute '_count'" in str(exc_info.value)
+
+    def test_with_validate_assignment_false(self):
+        """Test that validation is skipped when validate_assignment=False."""
+        from pydantic import ConfigDict, PrivateAttr
+
+        class NoValidationModel(Typed):
+            model_config = ConfigDict(
+                extra="forbid",
+                frozen=True,
+                validate_private_assignment=False,  # Disable validation
+            )
+
+            name: str
+            _count: int = PrivateAttr(default=0)
+
+        model = NoValidationModel(name="test")
+
+        # Should allow any type when validation is disabled
+        model._count = 42
+        assert model._count == 42
+
+        model._count = "not_an_int"  # Should NOT raise error
+        assert model._count == "not_an_int"
+
+        model._count = [1, 2, 3]  # Should NOT raise error
+        assert model._count == [1, 2, 3]
+
+    def test_typed_default_has_validation(self):
+        """Test that Typed class has validate_private_assignment=True by default."""
+        from pydantic import PrivateAttr
+
+        class DefaultTyped(Typed):
+            name: str
+            _value: int = PrivateAttr(default=0)
+
+        # Typed should have validate_private_assignment=True by default
+        assert DefaultTyped.model_config.get("validate_private_assignment", False) is True
+
+        model = DefaultTyped(name="test")
+        model._value = 10  # Valid
+
+        # Should validate by default
+        with pytest.raises(ValueError):
+            model._value = "invalid"
+
+    def test_public_fields_still_frozen(self):
+        """Test that public fields remain frozen despite __setattr__ override."""
+
+        class Model(Typed):
+            name: str
+            value: int
+
+        model = Model(name="test", value=10)
+
+        # Public fields should still be frozen
+        with pytest.raises(ValidationError):
+            model.name = "new_name"
+
+        with pytest.raises(ValidationError):
+            model.value = 20
+
+    def test_error_message_includes_details(self):
+        """Test that validation errors include helpful details."""
+
+        class Model(Typed):
+            name: str
+            _count: int = 0
+
+        model = Model(name="test")
+
+        with pytest.raises(ValueError) as exc_info:
+            model._count = "invalid"
+
+        error_msg = str(exc_info.value)
+
+        # Should include all helpful information
+        assert "Cannot set private attribute '_count'" in error_msg
+        assert "Expected type:" in error_msg
+        assert "int" in error_msg
+        assert "got value of type" in error_msg
+        assert "str" in error_msg
+        assert "Validation errors:" in error_msg
+
+    def test_arbitrary_types_in_private_attrs(self):
+        """Test that arbitrary types (like threading.Thread) work in private attributes."""
+        import threading
+
+        from pydantic import PrivateAttr
+
+        class ThreadManager(Typed):
+            name: str
+            _thread: Optional[threading.Thread] = PrivateAttr(default=None)
+            _thread2: Optional[threading.Thread] = None
+
+            def post_initialize(self) -> None:
+                # Should allow setting arbitrary types
+                self._thread = threading.Thread(target=lambda: None)
+                self._thread2 = threading.Thread(target=lambda: print("hello"))
+
+        model = ThreadManager(name="manager")
+
+        # Should be able to get the threads
+        assert isinstance(model._thread, threading.Thread)
+        assert isinstance(model._thread2, threading.Thread)
+
+        # Should allow setting valid arbitrary types
+        new_thread = threading.Thread(target=lambda: print("test"))
+        model._thread = new_thread
+        assert model._thread is new_thread
+
+        # Should reject wrong types
+        with pytest.raises(ValueError) as exc_info:
+            model._thread = "not a thread"
+
+        assert "Cannot set private attribute '_thread'" in str(exc_info.value)
+        assert "Thread" in str(exc_info.value)
+        assert "str" in str(exc_info.value)
+
+    def test_arbitrary_types_optional(self):
+        """Test Optional[arbitrary_type] in private attributes."""
+        import threading
+
+        from pydantic import PrivateAttr
+
+        class Service(Typed):
+            name: str
+            _thread: Optional[threading.Thread] = PrivateAttr(default=None)
+
+        model = Service(name="service")
+
+        # Should allow None
+        assert model._thread is None
+        model._thread = None
+        assert model._thread is None
+
+        # Should allow valid thread
+        thread = threading.Thread(target=lambda: None)
+        model._thread = thread
+        assert model._thread is thread
+
+        # Note: For Optional[arbitrary_type], we can't validate the inner type
+        # easily without TypeAdapter, so this will pass (falls back to no validation
+        # for generic types with arbitrary inner types)
+        # This is acceptable behavior matching Pydantic's arbitrary_types_allowed
+
+
 class TestMutableTyped:
     """Test MutableTyped functionality - mutable variant of Typed."""
 
