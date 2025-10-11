@@ -334,6 +334,135 @@ def only_value(collection: dict, raise_error: bool = True) -> Any:
     return collection
 
 
+# ======================== Collection mapping utilities ======================== #
+INBUILT_COLLECTIONS = (list, tuple, set, frozenset, dict)
+
+
+def is_inbuilt_collection(obj: Any) -> bool:
+    """Check if object is a collection."""
+    return isinstance(obj, INBUILT_COLLECTIONS)
+
+
+def map_collection(obj: Any, func: callable, *, recurse: bool = False) -> Any:
+    """
+    Apply a function to all values in a nested collection structure.
+
+    This utility recursively traverses collections (list, tuple, set, frozenset, dict)
+    and applies the given function to each value. For dictionaries, the function is
+    applied only to values, not keys.
+
+    Args:
+        obj: The object to map over. Can be a scalar value or any nested collection.
+        func: A callable that takes a single argument and returns a transformed value.
+        recurse: If True, recursively apply to nested collections.
+                 If False (default), only apply to the immediate values.
+
+    Returns:
+        A new structure of the same type with the function applied to values:
+        - For scalars (non-collections): Returns `func(obj)`
+        - For lists: Returns `[func(item) for item in obj]` (or recursive equivalent)
+        - For tuples: Returns `tuple(func(item) for item in obj)` (or recursive equivalent)
+        - For sets: Returns `{func(item) for item in obj}` (or recursive equivalent)
+        - For frozensets: Returns `frozenset(func(item) for item in obj)` (or recursive equivalent)
+        - For dicts: Returns `{k: func(v) for k, v in obj.items()}` (or recursive equivalent)
+
+    Examples:
+        Basic scalar transformation:
+        >>> map_collection(5, lambda x: x * 2)
+        10
+
+        List transformation:
+        >>> map_collection([1, 2, 3], lambda x: x * 2)
+        [2, 4, 6]
+
+        Nested list transformation:
+        >>> map_collection([[1, 2], [3, 4]], lambda x: x * 2)
+        [[2, 4], [6, 8]]
+
+        Dict transformation (only values):
+        >>> map_collection({"a": 1, "b": 2}, lambda x: x * 2)
+        {'a': 2, 'b': 4}
+
+        Nested dict transformation:
+        >>> map_collection({"x": {"a": 1, "b": 2}}, lambda x: x * 2)
+        {'x': {'a': 2, 'b': 4}}
+
+        Mixed nested structures:
+        >>> map_collection({"nums": [1, 2], "data": {"val": 3}}, lambda x: x * 2)
+        {'nums': [2, 4], 'data': {'val': 6}}
+
+        Tuple preservation:
+        >>> result = map_collection((1, 2, 3), lambda x: x * 2)
+        >>> assert isinstance(result, tuple)
+        >>> assert result == (2, 4, 6)
+
+        Set transformation:
+        >>> result = map_collection({1, 2, 3}, lambda x: x * 2)
+        >>> assert isinstance(result, set)
+        >>> assert result == {2, 4, 6}
+
+        Non-recursive mode:
+        >>> map_collection([[1, 2], [3, 4]], lambda x: x if isinstance(x, list) else x * 2, recurse=False)
+        [[1, 2], [3, 4]]
+
+        Type conversion example:
+        >>> def to_str(x): return str(x) if not isinstance(x, (list, dict, tuple, set, frozenset)) else x
+        >>> map_collection([1, 2, {"a": 3}], to_str)
+        ['1', '2', {'a': '3'}]
+
+    Note:
+        - The function is applied to leaf values (non-collection items)
+        - Collections are reconstructed with the same type
+        - For dicts, keys are never transformed, only values
+        - Order is preserved for ordered collections (list, tuple)
+        - When `recurse=True`, the function is applied after recursing into subcollections
+    """
+    # Handle None
+    if obj is None:
+        return func(obj)
+
+    # For non-collections (scalars), apply the function directly
+    if not is_inbuilt_collection(obj):
+        return func(obj)
+
+    # Handle dict
+    if isinstance(obj, dict):
+        if recurse:
+            return {k: map_collection(v, func, recurse=True) for k, v in obj.items()}
+        else:
+            return {k: func(v) for k, v in obj.items()}
+
+    # Handle list
+    if isinstance(obj, list):
+        if recurse:
+            return [map_collection(item, func, recurse=True) for item in obj]
+        else:
+            return [func(item) for item in obj]
+
+    # Handle tuple
+    if isinstance(obj, tuple):
+        if recurse:
+            return tuple(map_collection(item, func, recurse=True) for item in obj)
+        else:
+            return tuple(func(item) for item in obj)
+
+    # Handle set
+    if isinstance(obj, set):
+        if recurse:
+            return {map_collection(item, func, recurse=True) for item in obj}
+        else:
+            return {func(item) for item in obj}
+
+    # Handle frozenset
+    if isinstance(obj, frozenset):
+        if recurse:
+            return frozenset(map_collection(item, func, recurse=True) for item in obj)
+        else:
+            return frozenset(func(item) for item in obj)
+
+    raise NotImplementedError(f"Unsupported data structure: {type(obj)}")
+
+
 # ======================== Dictionary utilities ======================== #
 
 

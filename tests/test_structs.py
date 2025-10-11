@@ -26,6 +26,7 @@ from morphic.structs import (
     is_scalar,
     is_set_like,
     keep_values,
+    map_collection,
     multiple_are_none,
     multiple_are_not_none,
     none_count,
@@ -1229,3 +1230,259 @@ class TestAttrDictUseCases:
         # Add new nested config
         config.cache = AttrDict({"enabled": True, "ttl": 3600})
         assert config.cache.ttl == 3600
+
+
+class TestMapCollection:
+    """Tests for map_collection function."""
+
+    def test_scalar_values(self):
+        """Test map_collection with scalar values."""
+        # Integer
+        assert map_collection(5, lambda x: x * 2) == 10
+
+        # String
+        assert map_collection("hello", lambda x: x.upper()) == "HELLO"
+
+        # Float
+        assert map_collection(3.14, lambda x: x * 2) == 6.28
+
+        # Boolean
+        assert map_collection(True, lambda x: not x) is False
+
+        # None
+        assert map_collection(None, lambda x: x) is None
+
+    def test_list_transformation(self):
+        """Test map_collection with lists."""
+        # Simple list
+        assert map_collection([1, 2, 3], lambda x: x * 2) == [2, 4, 6]
+
+        # Empty list
+        assert map_collection([], lambda x: x * 2) == []
+
+        # List with mixed types
+        result = map_collection([1, "hello", 3.14], lambda x: str(x))
+        assert result == ["1", "hello", "3.14"]
+
+    def test_nested_list_transformation(self):
+        """Test map_collection with nested lists."""
+        # Nested lists
+        assert map_collection([[1, 2], [3, 4]], lambda x: x * 2, recurse=True) == [[2, 4], [6, 8]]
+
+        # Deeply nested lists
+        assert map_collection([[[1, 2]], [[3]]], lambda x: x * 2, recurse=True) == [[[2, 4]], [[6]]]
+
+        # Mixed nesting levels
+        result = map_collection([1, [2, 3], [4, [5, 6]]], lambda x: x * 2, recurse=True)
+        assert result == [2, [4, 6], [8, [10, 12]]]
+
+    def test_tuple_transformation(self):
+        """Test map_collection with tuples."""
+        # Simple tuple
+        result = map_collection((1, 2, 3), lambda x: x * 2, recurse=True)
+        assert isinstance(result, tuple)
+        assert result == (2, 4, 6)
+
+        # Empty tuple
+        result = map_collection((), lambda x: x * 2, recurse=True)
+        assert isinstance(result, tuple)
+        assert result == ()
+
+        # Nested tuples
+        result = map_collection(((1, 2), (3, 4)), lambda x: x * 2, recurse=True)
+        assert isinstance(result, tuple)
+        assert result == ((2, 4), (6, 8))
+
+    def test_set_transformation(self):
+        """Test map_collection with sets."""
+        # Simple set
+        result = map_collection({1, 2, 3}, lambda x: x * 2, recurse=True)
+        assert isinstance(result, set)
+        assert result == {2, 4, 6}
+
+        # Empty set
+        result = map_collection(set(), lambda x: x * 2, recurse=True)
+        assert isinstance(result, set)
+        assert result == set()
+
+    def test_frozenset_transformation(self):
+        """Test map_collection with frozensets."""
+        # Simple frozenset
+        result = map_collection(frozenset({1, 2, 3}), lambda x: x * 2, recurse=True)
+        assert isinstance(result, frozenset)
+        assert result == frozenset({2, 4, 6})
+
+        # Empty frozenset
+        result = map_collection(frozenset(), lambda x: x * 2, recurse=True)
+        assert isinstance(result, frozenset)
+        assert result == frozenset()
+
+    def test_dict_transformation(self):
+        """Test map_collection with dictionaries (only values transformed)."""
+        # Simple dict
+        assert map_collection({"a": 1, "b": 2}, lambda x: x * 2, recurse=True) == {"a": 2, "b": 4}
+
+        # Empty dict
+        assert map_collection({}, lambda x: x * 2, recurse=True) == {}
+
+        # Keys are not transformed, only values
+        result = map_collection({"one": 1, "two": 2}, lambda x: x * 10, recurse=True)
+        assert result == {"one": 10, "two": 20}
+        assert "one" in result  # Keys unchanged
+
+    def test_nested_dict_transformation(self):
+        """Test map_collection with nested dictionaries."""
+        # Nested dicts
+        result = map_collection({"x": {"a": 1, "b": 2}}, lambda x: x * 2, recurse=True)
+        assert result == {"x": {"a": 2, "b": 4}}
+
+        # Deeply nested dicts
+        result = map_collection({"x": {"y": {"z": 1}}}, lambda x: x * 2, recurse=True)
+        assert result == {"x": {"y": {"z": 2}}}
+
+    def test_mixed_nested_structures(self):
+        """Test map_collection with mixed nested structures."""
+        # Dict with lists
+        result = map_collection({"nums": [1, 2, 3]}, lambda x: x * 2, recurse=True)
+        assert result == {"nums": [2, 4, 6]}
+
+        # List with dicts
+        result = map_collection([{"a": 1}, {"b": 2}], lambda x: x * 2, recurse=True)
+        assert result == [{"a": 2}, {"b": 4}]
+
+        # Complex nesting
+        data = {"numbers": [1, 2, 3], "nested": {"values": [4, 5], "data": {"x": 6}}, "tuples": (7, 8)}
+        result = map_collection(data, lambda x: x * 2, recurse=True)
+        assert result == {
+            "numbers": [2, 4, 6],
+            "nested": {"values": [8, 10], "data": {"x": 12}},
+            "tuples": (14, 16),
+        }
+
+    def test_non_recursive_mode(self):
+        """Test map_collection with recurse=False."""
+        # Should only apply to immediate values, not nested
+        result = map_collection([1, [2, 3]], lambda x: x * 2 if isinstance(x, int) else x, recurse=False)
+        # The nested list [2, 3] is not multiplied, stays as is
+        assert result == [2, [2, 3]]
+
+        # Dict with nested values
+        result = map_collection(
+            {"a": 1, "b": [2, 3]}, lambda x: x * 2 if isinstance(x, int) else x, recurse=False
+        )
+        assert result == {"a": 2, "b": [2, 3]}
+
+    def test_type_preservation(self):
+        """Test that collection types are preserved."""
+        # List stays list
+        result = map_collection([1, 2], lambda x: x, recurse=True)
+        assert isinstance(result, list)
+
+        # Tuple stays tuple
+        result = map_collection((1, 2), lambda x: x, recurse=True)
+        assert isinstance(result, tuple)
+
+        # Set stays set
+        result = map_collection({1, 2}, lambda x: x, recurse=True)
+        assert isinstance(result, set)
+
+        # Frozenset stays frozenset
+        result = map_collection(frozenset({1, 2}), lambda x: x, recurse=True)
+        assert isinstance(result, frozenset)
+
+        # Dict stays dict
+        result = map_collection({"a": 1}, lambda x: x, recurse=True)
+        assert isinstance(result, dict)
+
+    def test_type_conversion_function(self):
+        """Test map_collection with type conversion functions."""
+
+        # Convert all leaf values to strings
+        def to_str(x):
+            if isinstance(x, (list, dict, tuple, set, frozenset)):
+                return x
+            return str(x)
+
+        result = map_collection([1, 2, {"a": 3}], to_str, recurse=True)
+        assert result == ["1", "2", {"a": "3"}]
+
+        # Convert to uppercase for strings only
+        def upper_if_str(x):
+            return x.upper() if isinstance(x, str) else x
+
+        result = map_collection(["hello", 123, "world"], upper_if_str, recurse=True)
+        assert result == ["HELLO", 123, "WORLD"]
+
+    def test_conditional_transformation(self):
+        """Test map_collection with conditional logic."""
+
+        # Only transform even numbers
+        def transform_even(x):
+            if isinstance(x, int) and x % 2 == 0:
+                return x * 10
+            return x
+
+        result = map_collection([1, 2, 3, 4, 5], transform_even, recurse=True)
+        assert result == [1, 20, 3, 40, 5]
+
+        # Nested conditional
+        result = map_collection([[1, 2], [3, 4]], transform_even, recurse=True)
+        assert result == [[1, 20], [3, 40]]
+
+    def test_complex_real_world_example(self):
+        """Test with a realistic data transformation scenario."""
+        # Simulate converting string numbers to integers in a config
+        config = {
+            "server": {"port": "8080", "max_connections": "100"},
+            "workers": ["4", "8", "16"],
+            "timeouts": ("30", "60", "120"),
+            "features": {"cache_size": "1000"},
+        }
+
+        def str_to_int(x):
+            if isinstance(x, str) and x.isdigit():
+                return int(x)
+            return x
+
+        result = map_collection(config, str_to_int, recurse=True)
+
+        assert result["server"]["port"] == 8080
+        assert result["server"]["max_connections"] == 100
+        assert result["workers"] == [4, 8, 16]
+        assert result["timeouts"] == (30, 60, 120)
+        assert result["features"]["cache_size"] == 1000
+
+    def test_with_none_values(self):
+        """Test map_collection with None values in collections."""
+        # List with None
+        result = map_collection([1, None, 3], lambda x: x if x is None else x * 2, recurse=True)
+        assert result == [2, None, 6]
+
+        # Dict with None values
+        result = map_collection(
+            {"a": 1, "b": None, "c": 3}, lambda x: x if x is None else x * 2, recurse=True
+        )
+        assert result == {"a": 2, "b": None, "c": 6}
+
+    def test_empty_collections(self):
+        """Test map_collection with various empty collections."""
+        assert map_collection([], lambda x: x * 2, recurse=True) == []
+        assert map_collection({}, lambda x: x * 2, recurse=True) == {}
+        assert map_collection((), lambda x: x * 2, recurse=True) == ()
+        assert map_collection(set(), lambda x: x * 2, recurse=True) == set()
+        assert map_collection(frozenset(), lambda x: x * 2, recurse=True) == frozenset()
+
+    def test_with_callable_that_raises(self):
+        """Test map_collection when the callable raises an exception."""
+
+        def raise_on_negative(x):
+            if isinstance(x, int) and x < 0:
+                raise ValueError("Negative value not allowed")
+            return x * 2
+
+        # Should work fine with positive values
+        assert map_collection([1, 2, 3], raise_on_negative, recurse=True) == [2, 4, 6]
+
+        # Should raise when encountering negative
+        with pytest.raises(ValueError, match="Negative value not allowed"):
+            map_collection([1, -2, 3], raise_on_negative, recurse=True)

@@ -1217,6 +1217,228 @@ old_product = Product(price=100.0, tax_rate=0.1)
 new_product = Product(price=200.0, tax_rate=0.15)  # One validation cycle
 ```
 
+### Nested Typed Objects and Hooks
+
+When working with nested `Typed` objects, **automatic conversion happens before hooks run**, making it easy to work with nested data.
+
+#### Automatic Nested Type Conversion
+
+Nested `Typed` fields are **automatically converted from dicts to objects** before any hooks (`pre_initialize`, `pre_validate`, etc.) are called. This means you can directly access nested objects and their computed fields without manual conversion:
+
+```python
+class Address(Typed):
+    street: str
+    city: str
+    full_address: Optional[str] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        if 'street' in data and 'city' in data:
+            data['full_address'] = f"{data['street']}, {data['city']}"
+
+class Person(Typed):
+    name: str
+    address: Address
+    summary: Optional[str] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        # address is already an Address object (not a dict!)
+        if 'address' in data:
+            addr = data['address']
+            assert isinstance(addr, Address)
+            # Can access computed fields directly
+            data['summary'] = f"{data['name']} from {addr.full_address}"
+
+# Pass nested data as dict - automatic conversion happens
+person = Person(
+    name="John",
+    address={"street": "123 Main St", "city": "NYC"}
+)
+assert person.summary == "John from 123 Main St, NYC"
+assert person.address.full_address == "123 Main St, NYC"
+```
+
+#### Hook Execution Order with Nesting
+
+With automatic conversion, the execution order is:
+
+```python
+class Inner(Typed):
+    value: int
+    inner_computed: Optional[str] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        if 'value' in data:
+            data['inner_computed'] = f"Inner: {data['value']}"
+
+class Outer(Typed):
+    name: str
+    inner: Inner
+    outer_computed: Optional[str] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        # inner is already an Inner object
+        if 'inner' in data:
+            data['outer_computed'] = f"Outer: {data['inner'].inner_computed}"
+
+# Execution order:
+# 1. Set default values for Outer
+# 2. Convert nested dicts to objects:
+#    a. Set default values for Inner
+#    b. Inner.pre_initialize
+#    c. Inner.pre_validate
+#    d. Inner Pydantic validation
+# 3. Outer.pre_initialize (inner is now an object)
+# 4. Outer.pre_validate
+# 5. Outer Pydantic validation
+# 6. Inner.post_initialize
+# 7. Inner.post_validate
+# 8. Outer.post_initialize
+# 9. Outer.post_validate
+
+outer = Outer(name="test", inner={"value": 42})
+```
+
+#### Supported Nested Conversions
+
+Automatic conversion works for:
+
+- **Direct fields**: `address: Address` → dict converted to Address
+- **Optional fields**: `address: Optional[Address]` → dict converted to Address (if not None)
+- **Lists**: `addresses: List[Address]` → all dicts in list converted to Address objects
+- **Dicts**: `locations: Dict[str, Address]` → all dict values converted to Address objects
+
+```python
+class Item(Typed):
+    name: str
+    price: float
+    display: Optional[str] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        if 'name' in data and 'price' in data:
+            data['display'] = f"{data['name']}: ${data['price']}"
+
+class Order(Typed):
+    items: List[Item]
+    total: float
+    summary: Optional[str] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        # All items are already Item objects
+        if 'items' in data:
+            items = data['items']
+            assert all(isinstance(item, Item) for item in items)
+            # Access computed fields
+            displays = [item.display for item in items]
+            data['summary'] = f"Order: {', '.join(displays)}"
+
+order = Order(
+    items=[
+        {"name": "Widget", "price": 10.0},
+        {"name": "Gadget", "price": 20.0}
+    ],
+    total=30.0
+)
+assert order.summary == "Order: Widget: $10.0, Gadget: $20.0"
+```
+
+#### Deeply Nested Objects
+
+Automatic conversion works recursively for deeply nested structures:
+
+```python
+class Level3(Typed):
+    value: str
+    level3_data: Optional[str] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        if 'value' in data:
+            data['level3_data'] = f"L3: {data['value']}"
+
+class Level2(Typed):
+    level3: Level3
+    level2_data: Optional[str] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        # Nested object is already converted
+        if 'level3' in data:
+            level3_obj = data['level3']
+            assert isinstance(level3_obj, Level3)
+            # Access its computed field
+            data['level2_data'] = f"L2: {level3_obj.level3_data}"
+
+class Level1(Typed):
+    level2: Level2
+    level1_data: Optional[str] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        # Can traverse nested objects directly
+        if 'level2' in data:
+            level2_obj = data['level2']
+            assert isinstance(level2_obj, Level2)
+            # Access deeply nested computed field
+            data['level1_data'] = f"L1: {level2_obj.level3.level3_data}"
+
+model = Level1(level2={"level3": {"value": "deep"}})
+assert model.level1_data == "L1: L3: deep"
+assert model.level2.level2_data == "L2: L3: deep"
+assert model.level2.level3.level3_data == "L3: deep"
+```
+
+#### Nested MutableTyped Behavior
+
+With `MutableTyped`, modifying a nested object's field triggers its hooks, but doesn't update the parent:
+
+```python
+class MutableInner(MutableTyped):
+    value: int
+    doubled: Optional[int] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        if 'value' in data:
+            data['doubled'] = data['value'] * 2
+
+class MutableOuter(MutableTyped):
+    name: str
+    inner: MutableInner
+    summary: Optional[str] = None
+
+    @classmethod
+    def pre_initialize(cls, data: Dict) -> None:
+        if 'name' in data and 'inner' in data:
+            inner_obj = data['inner']
+            # Already converted to object
+            assert isinstance(inner_obj, MutableInner)
+            data['summary'] = f"{data['name']}: {inner_obj.doubled}"
+
+outer = MutableOuter(name="test", inner={"value": 10})
+assert outer.summary == "test: 20"
+
+# Modify nested object
+outer.inner.value = 15
+assert outer.inner.doubled == 30  # Inner hook ran, recomputed!
+
+# Parent's summary is NOT automatically updated
+assert outer.summary == "test: 20"  # Still old value
+```
+
+#### Best Practices for Nested Objects
+
+1. **No manual conversion needed**: Nested objects are automatically converted before hooks
+2. **Access computed fields directly**: Nested objects have already run their hooks
+3. **Type checking**: Objects are guaranteed to be the correct type (not dicts)
+4. **Deep nesting works seamlessly**: All levels are recursively converted
+5. **MutableTyped caveat**: Parent objects don't auto-update when children change
+
 ## Performance and Best Practices
 
 ### Pydantic Performance Characteristics

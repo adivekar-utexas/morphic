@@ -1,7 +1,7 @@
 """Comprehensive tests for Typed module."""
 
 from dataclasses import field
-from typing import Dict, List, NoReturn, Optional, Union
+from typing import Dict, List, NoReturn, Optional, Set, Tuple, Union
 
 import pytest
 from pydantic import Field, ValidationError, field_validator
@@ -1883,9 +1883,10 @@ class TestInitialize:
 
             @classmethod
             def pre_validate(cls, data: Dict) -> NoReturn:
-                if "user" in data and isinstance(data["user"], dict):
-                    # Create the nested object first
-                    nested = NestedInitializer(**data["user"])
+                if "user" in data:
+                    # Nested object is already converted
+                    nested = data["user"]
+                    assert isinstance(nested, NestedInitializer)
                     data["container_info"] = f"Container for {nested.full_name}"
 
             def initialize(self) -> NoReturn:
@@ -2181,8 +2182,9 @@ class TestInitialize:
             @classmethod
             def pre_validate(cls, data: Dict) -> NoReturn:
                 if "items" in data:
-                    # Create items to get their paths
-                    items = [DeepNestedInitializer(**item) for item in data["items"]]
+                    # Items are already converted to objects
+                    items = data["items"]
+                    assert all(isinstance(item, DeepNestedInitializer) for item in items)
                     paths = [item.path for item in items]
                     data["container_path"] = f"Container[{', '.join(paths)}]"
 
@@ -2196,8 +2198,9 @@ class TestInitialize:
             @classmethod
             def pre_validate(cls, data: Dict) -> NoReturn:
                 if "containers" in data:
-                    # Create containers to get their paths
-                    containers = [ContainerInitializer(**container) for container in data["containers"]]
+                    # Containers are already converted to objects
+                    containers = data["containers"]
+                    assert all(isinstance(container, ContainerInitializer) for container in containers)
                     container_paths = [container.container_path for container in containers]
                     data["top_level_info"] = f"TopLevel[{', '.join(container_paths)}]"
 
@@ -3428,6 +3431,415 @@ class TestLifecycleHooks:
         assert model.computed == 30  # Recomputed!
 
         # This behavior is because validate_assignment=True runs full validation
+
+
+class TestNestedTypedWithHooks:
+    """Test how nested Typed objects interact with lifecycle hooks."""
+
+    def test_nested_typed_hooks_execution_order(self):
+        """Test that nested Typed objects have their own hook execution."""
+
+        call_log = []
+
+        class Inner(Typed):
+            value: int
+            inner_computed: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                call_log.append("Inner.pre_initialize")
+                if "value" in data:
+                    data["inner_computed"] = f"Inner: {data['value']}"
+
+            def post_initialize(self) -> NoReturn:
+                call_log.append("Inner.post_initialize")
+
+        class Outer(Typed):
+            name: str
+            inner: Inner
+            outer_computed: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                call_log.append("Outer.pre_initialize")
+                if "name" in data:
+                    data["outer_computed"] = f"Outer: {data['name']}"
+
+            def post_initialize(self) -> NoReturn:
+                call_log.append("Outer.post_initialize")
+
+        call_log.clear()
+        # Pass nested dict - Pydantic will create Inner object
+        outer = Outer(name="test", inner={"value": 42})
+
+        # Verify hooks were called in correct order
+        # Inner object is created during Pydantic validation (after Outer's pre hooks)
+        assert "Outer.pre_initialize" in call_log
+        assert "Inner.pre_initialize" in call_log
+        assert "Inner.post_initialize" in call_log
+        assert "Outer.post_initialize" in call_log
+
+        # Verify data is correct
+        assert outer.outer_computed == "Outer: test"
+        assert isinstance(outer.inner, Inner)
+        assert outer.inner.inner_computed == "Inner: 42"
+
+    def test_accessing_nested_object_in_pre_initialize(self):
+        """Test accessing nested data as object in pre_initialize (automatic conversion)."""
+
+        class Address(Typed):
+            street: str
+            city: str
+            full_address: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "street" in data and "city" in data:
+                    data["full_address"] = f"{data['street']}, {data['city']}"
+
+        class Person(Typed):
+            name: str
+            address: Address
+            summary: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                # Nested data is automatically converted to object before this hook!
+                if "name" in data and "address" in data:
+                    addr_obj = data["address"]
+                    # It's already an Address object, not a dict
+                    assert isinstance(addr_obj, Address)
+                    # Can access computed fields directly
+                    data["summary"] = f"{data['name']} from {addr_obj.full_address}"
+
+        person = Person(name="John", address={"street": "123 Main St", "city": "NYC"})
+
+        assert person.summary == "John from 123 Main St, NYC"  # Used object access
+        assert person.address.full_address == "123 Main St, NYC"  # Inner hook ran
+
+    def test_no_manual_conversion_needed(self):
+        """Test that nested objects are automatically converted - no manual work needed."""
+
+        class Config(Typed):
+            key: str
+            value: str
+            display: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "key" in data and "value" in data:
+                    data["display"] = f"{data['key']}={data['value']}"
+
+        class Settings(Typed):
+            name: str
+            config: Config
+            config_summary: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                # Nested object is already converted - just access it!
+                if "config" in data:
+                    config_obj = data["config"]
+                    # It's already a Config object (not a dict)
+                    assert isinstance(config_obj, Config)
+                    # Can directly access computed fields
+                    data["config_summary"] = f"Config: {config_obj.display}"
+
+        settings = Settings(name="app", config={"key": "debug", "value": "true"})
+
+        assert settings.config_summary == "Config: debug=true"
+        assert settings.config.display == "debug=true"
+
+    def test_nested_typed_with_post_hooks(self):
+        """Test post hooks with nested Typed objects."""
+
+        call_log = []
+
+        class Item(Typed):
+            name: str
+            price: float
+
+            def post_initialize(self) -> NoReturn:
+                call_log.append(f"Item.post_initialize: {self.name}")
+
+            def post_validate(self) -> NoReturn:
+                if self.price <= 0:
+                    raise ValueError("Price must be positive")
+                call_log.append(f"Item.post_validate: {self.name}")
+
+        class Order(Typed):
+            items: List[Item]
+            total: float
+
+            def post_initialize(self) -> NoReturn:
+                call_log.append("Order.post_initialize")
+
+            def post_validate(self) -> NoReturn:
+                # Can access nested objects here
+                item_count = len(self.items)
+                call_log.append(f"Order.post_validate: {item_count} items")
+
+        call_log.clear()
+        order = Order(
+            items=[{"name": "Widget", "price": 10.0}, {"name": "Gadget", "price": 20.0}], total=30.0
+        )
+
+        # All hooks should have run
+        assert "Item.post_initialize: Widget" in call_log
+        assert "Item.post_initialize: Gadget" in call_log
+        assert "Item.post_validate: Widget" in call_log
+        assert "Item.post_validate: Gadget" in call_log
+        assert "Order.post_initialize" in call_log
+        assert "Order.post_validate: 2 items" in call_log
+
+    def test_deeply_nested_typed_with_hooks(self):
+        """Test deeply nested Typed objects with hooks at each level."""
+
+        class Level3(Typed):
+            value: str
+            level3_data: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "value" in data:
+                    data["level3_data"] = f"L3: {data['value']}"
+
+        class Level2(Typed):
+            level3: Level3
+            level2_data: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                # Nested object is already converted
+                if "level3" in data:
+                    nested_obj = data["level3"]
+                    assert isinstance(nested_obj, Level3)
+                    # Can access its computed field
+                    data["level2_data"] = f"L2: {nested_obj.level3_data}"
+
+        class Level1(Typed):
+            level2: Level2
+            level1_data: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                # Can traverse nested objects directly
+                if "level2" in data:
+                    level2_obj = data["level2"]
+                    assert isinstance(level2_obj, Level2)
+                    # Access deeply nested computed field
+                    data["level1_data"] = f"L1: {level2_obj.level3.level3_data}"
+
+        model = Level1(level2={"level3": {"value": "deep"}})
+
+        # All levels should have computed their data
+        assert model.level1_data == "L1: L3: deep"
+        assert model.level2.level2_data == "L2: L3: deep"
+        assert model.level2.level3.level3_data == "L3: deep"
+
+    def test_nested_typed_access_computed_fields(self):
+        """Test accessing computed fields from nested objects in hooks."""
+
+        class Dimensions(Typed):
+            width: float
+            height: float
+            area: Optional[float] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "width" in data and "height" in data:
+                    data["area"] = data["width"] * data["height"]
+
+        class Product(Typed):
+            name: str
+            dimensions: Dimensions
+            volume: Optional[float] = None
+            description: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                # Nested object is already converted, can access it directly
+                if "dimensions" in data:
+                    dims = data["dimensions"]
+                    assert isinstance(dims, Dimensions)
+                    # Access computed area field from nested object
+                    # Assume depth of 10 for volume calculation
+                    data["volume"] = dims.area * 10
+
+            @classmethod
+            def pre_validate(cls, data: Dict) -> NoReturn:
+                # Can access nested object's computed fields
+                if "dimensions" in data:
+                    dims = data["dimensions"]
+                    assert isinstance(dims, Dimensions)
+                    data["description"] = f"{data['name']}: {dims.area} sq units"
+
+        product = Product(name="Box", dimensions={"width": 5.0, "height": 3.0})
+
+        assert product.volume == 150.0  # area (15) * 10
+        assert product.dimensions.area == 15.0  # 5 * 3
+        assert product.description == "Box: 15.0 sq units"
+
+    def test_nested_mutable_typed_with_hooks(self):
+        """Test nested MutableTyped objects with hooks."""
+
+        class MutableInner(MutableTyped):
+            value: int
+            doubled: Optional[int] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "value" in data:
+                    data["doubled"] = data["value"] * 2
+
+        class MutableOuter(MutableTyped):
+            name: str
+            inner: MutableInner
+            summary: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "name" in data and "inner" in data:
+                    inner_obj = data["inner"]
+                    # Already converted to object
+                    assert isinstance(inner_obj, MutableInner)
+                    # Can access computed field
+                    data["summary"] = f"{data['name']}: {inner_obj.doubled}"
+
+        outer = MutableOuter(name="test", inner={"value": 10})
+
+        assert outer.inner.doubled == 20
+        assert outer.summary == "test: 20"  # Uses computed doubled value
+
+        # Can modify nested object
+        outer.inner.value = 15
+        assert outer.inner.doubled == 30  # Recomputed!
+
+        # But outer's summary is not automatically updated
+        assert outer.summary == "test: 20"  # Still old value
+
+    def test_tuple_of_typed_objects(self):
+        """Test automatic conversion for Tuple[Typed]."""
+
+        class Point(Typed):
+            x: int
+            y: int
+            label: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "x" in data and "y" in data:
+                    data["label"] = f"({data['x']}, {data['y']})"
+
+        class Path(Typed):
+            points: Tuple[Point, ...]
+            description: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "points" in data:
+                    # Points are already Point objects
+                    points = data["points"]
+                    assert isinstance(points, tuple)
+                    assert all(isinstance(p, Point) for p in points)
+                    labels = [p.label for p in points]
+                    data["description"] = f"Path: {' -> '.join(labels)}"
+
+        path = Path(points=({"x": 0, "y": 0}, {"x": 1, "y": 1}, {"x": 2, "y": 4}))
+
+        assert isinstance(path.points, tuple)
+        assert len(path.points) == 3
+        assert path.points[0].label == "(0, 0)"
+        assert path.description == "Path: (0, 0) -> (1, 1) -> (2, 4)"
+
+    def test_set_of_typed_objects(self):
+        """Test automatic conversion for Set[Typed]."""
+
+        class Tag(Typed):
+            name: str
+            category: str
+            display: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "name" in data and "category" in data:
+                    data["display"] = f"{data['category']}:{data['name']}"
+
+            def __hash__(self):
+                return hash((self.name, self.category))
+
+            def __eq__(self, other):
+                return isinstance(other, Tag) and self.name == other.name and self.category == other.category
+
+        class Article(Typed):
+            title: str
+            tags: Set[Tag]
+            tag_summary: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "tags" in data:
+                    # Tags are already Tag objects (in list form, Pydantic will convert to set)
+                    tags = data["tags"]
+                    # Could be list or set depending on input format
+                    assert all(isinstance(t, Tag) for t in tags)
+                    displays = sorted([t.display for t in tags])
+                    data["tag_summary"] = f"Tags: {', '.join(displays)}"
+
+        article = Article(
+            title="Python Tips",
+            tags=[{"name": "python", "category": "language"}, {"name": "tutorial", "category": "type"}],
+        )
+
+        assert isinstance(article.tags, set)
+        assert len(article.tags) == 2
+        # Set maintains Tag objects
+        for tag in article.tags:
+            assert isinstance(tag, Tag)
+            assert tag.display in ["language:python", "type:tutorial"]
+
+    def test_dict_values_typed_objects(self):
+        """Test automatic conversion for Dict[str, Typed]."""
+
+        class Config(Typed):
+            key: str
+            value: str
+            formatted: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "key" in data and "value" in data:
+                    data["formatted"] = f"{data['key']}={data['value']}"
+
+        class Settings(Typed):
+            name: str
+            configs: Dict[str, Config]
+            summary: Optional[str] = None
+
+            @classmethod
+            def pre_initialize(cls, data: Dict) -> NoReturn:
+                if "configs" in data:
+                    # Config values are already Config objects
+                    configs = data["configs"]
+                    assert isinstance(configs, dict)
+                    assert all(isinstance(v, Config) for v in configs.values())
+                    formatted_values = [configs[k].formatted for k in sorted(configs.keys())]
+                    data["summary"] = f"Settings: {', '.join(formatted_values)}"
+
+        settings = Settings(
+            name="app",
+            configs={
+                "database": {"key": "db_host", "value": "localhost"},
+                "cache": {"key": "cache_ttl", "value": "3600"},
+            },
+        )
+
+        assert isinstance(settings.configs, dict)
+        assert len(settings.configs) == 2
+        assert settings.configs["database"].formatted == "db_host=localhost"
+        assert settings.configs["cache"].formatted == "cache_ttl=3600"
+        assert "cache_ttl=3600" in settings.summary
+        assert "db_host=localhost" in settings.summary
 
 
 class TestMutableTyped:
