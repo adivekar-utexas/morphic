@@ -11,7 +11,9 @@ def _is_abstract(cls: Type) -> bool:
     return ABC in cls.__bases__
 
 
-def _str_normalize(x: Union[str, AutoEnum], remove: Optional[Union[str, Tuple, List, Set]] = (" ", "-", "_")) -> str:
+def _str_normalize(
+    x: Union[str, AutoEnum], remove: Optional[Union[str, Tuple, List, Set]] = (" ", "-", "_")
+) -> str:
     """Normalize string or AutoEnum by removing specified characters and converting to lowercase."""
     if remove is None:
         remove = set()
@@ -289,7 +291,8 @@ class Registry(ABC):
                 key = _str_normalize(key)
             elif isinstance(key, tuple):
                 key = tuple(
-                    _str_normalize(key_part) if isinstance(key_part, (str, AutoEnum)) else key_part for key_part in key
+                    _str_normalize(key_part) if isinstance(key_part, (str, AutoEnum)) else key_part
+                    for key_part in key
                 )
             keys_to_register.append(key)
 
@@ -405,7 +408,8 @@ class Registry(ABC):
         elif isinstance(key, tuple):
             # Normalize tuple keys the same way as during registration
             normalized_key = tuple(
-                _str_normalize(key_part) if isinstance(key_part, (str, AutoEnum)) else key_part for key_part in key
+                _str_normalize(key_part) if isinstance(key_part, (str, AutoEnum)) else key_part
+                for key_part in key
             )
             subclasses = cls._registry.get(normalized_key)
         else:

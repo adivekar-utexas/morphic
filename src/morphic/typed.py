@@ -437,9 +437,17 @@ class Typed(BaseModel, ABC):
             errors_str = ""
             for error_i, error in enumerate(e.errors()):
                 assert isinstance(error, dict)
-                error_msg: str = textwrap.indent(error.get("msg", ""), "    ").strip()
+                # Access 'msg' and 'loc' directly to raise KeyError if missing
+                error_msg: str = textwrap.indent(error["msg"], "    ").strip()
+                error_loc: tuple = error["loc"]
+                error_type: str = error["type"]
+
                 errors_str += "\n"
-                errors_str += textwrap.indent(f"[Error#{error_i + 1}] ValidationError:\n{error_msg}", "  ")
+                errors_str += textwrap.indent(
+                    f"[Error#{error_i + 1}] ValidationError at field {error_loc}:\n{error_msg} (type={error_type})",
+                    "  ",
+                )
+
                 if isinstance(error["input"], dict):
                     errors_str += "\n"
                     errors_str += textwrap.indent(

@@ -1,0 +1,506 @@
+---
+description: Practical examples for using Typed and Registry correctly in Morphic
+---
+
+# Typed and Registry Usage Examples
+
+This guide provides practical examples for common patterns when using Morphic's Typed and Registry systems.
+
+## Private Variables with post_initialize
+
+Private variables should be set in `post_initialize` hook for side effects, or in `pre_initialize` for derived fields.
+
+### Correct Pattern: Using pre_initialize for Computed Fields
+
+```python
+from morphic import Typed
+from pydantic import PrivateAttr
+from typing import Optional
+
+class Rectangle(Typed):
+    width: int
+    height: int
+    _area: int = PrivateAttr()
+    _perimeter: int = PrivateAttr()
+    
+    @classmethod
+    def pre_initialize(cls, data: dict) -> None:
+        """Compute derived fields BEFORE validation."""
+        if 'width' in data and 'height' in data:
+            width = int(data['width'])
+            height = int(data['height'])
+            data['_area'] = width * height
+            data['_perimeter'] = 2 * (width + height)
+    
+    def post_initialize(self) -> None:
+        """Use post_initialize only for side effects like logging."""
+        print(f"Rectangle created: {self.width}x{self.height}, area={self._area}")
+
+# Usage
+rect = Rectangle(width=5, height=3)
+print(f"Area: {rect._area}")  # 15
+print(f"Perimeter: {rect._perimeter}")  # 16
+
+# Can modify private attributes after creation
+rect._area = 20  # Valid - private attrs are mutable
+```
+
+### Wrong Pattern: Don't Modify Instance in post_initialize
+
+```python
+# ❌ WRONG - Don't do this!
+class BadRectangle(Typed):
+    width: int
+    height: int
+    _area: int = PrivateAttr(default=0)
+    
+    def post_initialize(self) -> None:
+        # This won't work for Typed (frozen) or causes issues for MutableTyped
+        self._area = self.width * self.height  # ❌ BAD!
+
+# ✅ CORRECT - Use pre_initialize instead
+class GoodRectangle(Typed):
+    width: int
+    height: int
+    _area: int = PrivateAttr()
+    
+    @classmethod
+    def pre_initialize(cls, data: dict) -> None:
+        if 'width' in data and 'height' in data:
+            data['_area'] = data['width'] * data['height']  # ✅ GOOD!
+```
+
+## MutableTyped vs Typed
+
+### Typed (Immutable) - Default Choice
+
+Use `Typed` for immutable data structures, configurations, and thread-safe objects:
+
+```python
+from morphic import Typed
+from typing import Optional
+
+class DatabaseConfig(Typed):
+    host: str
+    port: int
+    database: str
+    ssl: bool = True
+    connection_timeout: int = 30
+
+# Config is immutable - prevents accidental changes
+config = DatabaseConfig(
+    host="localhost",
+    port=5432,
+    database="myapp"
+)
+
+# Cannot modify after creation
+# config.port = 3306  # ❌ Raises ValidationError (frozen)
+
+# Use model_copy to create modified versions
+new_config = config.model_copy(update={"port": 3306})
+assert config.port == 5432  # Original unchanged
+assert new_config.port == 3306  # New version modified
+```
+
+### MutableTyped - For Dynamic State
+
+Use `MutableTyped` when you need to modify fields frequently:
+
+```python
+from morphic import MutableTyped
+from datetime import datetime
+from typing import List
+
+class UserSession(MutableTyped):
+    user_id: str
+    login_time: datetime
+    last_activity: datetime
+    permissions: List[str] = []
+    request_count: int = 0
+
+# Session state can be updated
+session = UserSession(
+    user_id="user123",
+    login_time=datetime.now(),
+    last_activity=datetime.now()
+)
+
+# Fast modifications without validation (default behavior)
+for _ in range(10000):
+    session.request_count += 1  # Very fast - no validation overhead
+
+session.last_activity = datetime.now()
+session.permissions = ["read", "write"]
+
+print(f"Requests: {session.request_count}")  # 10000
+```
+
+### MutableTyped with Validation
+
+Enable validation when data integrity is critical:
+
+```python
+from morphic import MutableTyped
+from pydantic import ConfigDict
+
+class ValidatedUserSession(MutableTyped):
+    model_config = ConfigDict(
+        frozen=False,
+        validate_assignment=True,  # Enable validation on assignment
+    )
+    
+    user_id: str
+    request_count: int = 0
+
+session = ValidatedUserSession(user_id="user123")
+
+# Now validated on assignment
+session.request_count = 42  # ✓ Valid
+try:
+    session.request_count = "invalid"  # ✗ Raises ValidationError
+except ValidationError:
+    print("Invalid type rejected")
+```
+
+## Integrating Typed with Registry
+
+### Basic Integration Pattern
+
+```python
+from morphic import Typed, Registry
+from abc import ABC, abstractmethod
+
+# 1. Create a Typed config class
+class ServiceConfig(Typed):
+    name: str
+    timeout: float = 30.0
+    retries: int = 3
+    debug: bool = False
+
+# 2. Create Registry-based service hierarchy
+class Service(Registry, ABC):
+    def __init__(self, config: ServiceConfig):
+        self.config = config
+    
+    @abstractmethod
+    def process(self, data: str) -> str:
+        pass
+
+class WebService(Service):
+    def process(self, data: str) -> str:
+        return f"[{self.config.name}] Processing web request: {data} (timeout: {self.config.timeout}s)"
+
+class DatabaseService(Service):
+    def process(self, data: str) -> str:
+        return f"[{self.config.name}] Processing DB query: {data} (retries: {self.config.retries})"
+
+# 3. Usage - create config and service
+config = ServiceConfig(name="API", timeout=60.0, retries=5, debug=True)
+service = Service.of("WebService", config=config)
+
+print(service.process("user_data"))
+# Output: [API] Processing web request: user_data (timeout: 60.0s)
+
+# Dict automatically converted to Typed object
+db_service = Service.of("DatabaseService", config={
+    "name": "UserDB",
+    "timeout": 45.0,
+    "retries": 10
+})
+print(db_service.process("SELECT * FROM users"))
+```
+
+### Advanced Pattern: Mutable Config with Registry
+
+```python
+from morphic import MutableTyped, Registry
+from typing import Optional
+
+class MutableServiceConfig(MutableTyped):
+    name: str
+    timeout: float = 30.0
+    retries: int = 3
+    _last_updated: Optional[str] = None
+
+class DynamicService(Registry):
+    def __init__(self, config: MutableServiceConfig):
+        self.config = config
+    
+    def update_config(self, **kwargs) -> None:
+        """Dynamically update service configuration."""
+        from datetime import datetime
+        for key, value in kwargs.items():
+            if hasattr(self.config, key):
+                setattr(self.config, key, value)
+        self.config._last_updated = datetime.now().isoformat()
+    
+    def get_status(self) -> str:
+        return f"Service {self.config.name}: timeout={self.config.timeout}s, retries={self.config.retries}"
+
+# Usage
+config = MutableServiceConfig(name="DynamicAPI", timeout=30.0, retries=3)
+service = DynamicService.of(config=config)
+
+print(service.get_status())
+# Output: Service DynamicAPI: timeout=30.0s, retries=3
+
+# Update configuration at runtime
+service.update_config(timeout=60.0, retries=10)
+
+print(service.get_status())
+# Output: Service DynamicAPI: timeout=60.0s, retries=10
+```
+
+### Pattern: Nested Typed Objects with Registry
+
+```python
+from morphic import Typed, Registry
+from typing import List
+
+class DatabaseConfig(Typed):
+    host: str
+    port: int
+    max_connections: int = 10
+
+class CacheConfig(Typed):
+    host: str
+    port: int
+    ttl: int = 3600
+
+class AppConfig(Typed):
+    app_name: str
+    database: DatabaseConfig
+    cache: CacheConfig
+    features: List[str] = []
+
+class Application(Registry):
+    def __init__(self, config: AppConfig):
+        self.config = config
+    
+    def get_info(self) -> str:
+        return (
+            f"App: {self.config.app_name}\n"
+            f"DB: {self.config.database.host}:{self.config.database.port}\n"
+            f"Cache: {self.config.cache.host}:{self.config.cache.port}\n"
+            f"Features: {', '.join(self.config.features)}"
+        )
+
+# Create with nested dicts - automatic conversion
+app = Application.of(config={
+    "app_name": "MyApp",
+    "database": {
+        "host": "localhost",
+        "port": 5432,
+        "max_connections": 20
+    },
+    "cache": {
+        "host": "localhost",
+        "port": 6379,
+        "ttl": 7200
+    },
+    "features": ["auth", "logging", "metrics"]
+})
+
+print(app.get_info())
+# Output:
+# App: MyApp
+# DB: localhost:5432
+# Cache: localhost:6379
+# Features: auth, logging, metrics
+
+# Access nested typed objects
+assert isinstance(app.config.database, DatabaseConfig)
+assert app.config.database.max_connections == 20
+```
+
+## Private Attribute Validation
+
+Private attributes are automatically validated when `validate_private_assignment=True` (default for Typed):
+
+```python
+from morphic import Typed
+from pydantic import PrivateAttr
+from typing import Optional, List
+
+class CachedService(Typed):
+    name: str
+    
+    # Private attributes with type hints are validated
+    _cache: Optional[dict] = PrivateAttr(default=None)
+    _count: int = PrivateAttr(default=0)
+    _tags: List[str] = PrivateAttr(default_factory=list)
+    
+    def post_initialize(self) -> None:
+        # Initialize private attributes
+        self._cache = {"initialized": True}
+        self._count = 0
+        self._tags = ["active"]
+
+service = CachedService(name="API")
+
+# Can modify private attributes with validation
+service._count = 42  # ✓ Valid: int
+service._count = "50"  # ✓ Valid: coerced to int(50)
+
+try:
+    service._count = "invalid"  # ✗ Raises ValidationError
+except ValidationError:
+    print("Invalid value rejected")
+
+# Untyped private attrs have no validation
+service._anything = "any value"
+service._anything = 123  # No error - untyped
+```
+
+## Common Pitfalls to Avoid
+
+### ❌ Don't: Modify frozen instance in post_initialize
+
+```python
+class Bad(Typed):
+    value: int
+    _derived: int = PrivateAttr()
+    
+    def post_initialize(self) -> None:
+        self._derived = self.value * 2  # ❌ Issues with validation
+```
+
+### ✅ Do: Use pre_initialize for derived fields
+
+```python
+class Good(Typed):
+    value: int
+    _derived: int = PrivateAttr()
+    
+    @classmethod
+    def pre_initialize(cls, data: dict) -> None:
+        if 'value' in data:
+            data['_derived'] = data['value'] * 2  # ✅ Correct
+```
+
+### ❌ Don't: Use MutableTyped without understanding validation
+
+```python
+class Risky(MutableTyped):
+    count: int = 0
+
+risky = Risky()
+risky.count = "not_a_number"  # ✓ Allowed! No validation by default
+```
+
+### ✅ Do: Enable validation when needed
+
+```python
+class Safe(MutableTyped):
+    model_config = ConfigDict(frozen=False, validate_assignment=True)
+    count: int = 0
+
+safe = Safe()
+# safe.count = "not_a_number"  # ✗ Raises ValidationError
+```
+
+### ❌ Don't: Create Registry without proper hierarchy
+
+```python
+# Bad - no abstract base
+class Service1(Registry):
+    pass
+
+class Service2(Registry):
+    pass
+
+# These are separate hierarchies - can't use Service1.of("Service2")
+```
+
+### ✅ Do: Use abstract base class for grouping
+
+```python
+class Service(Registry, ABC):
+    @abstractmethod
+    def process(self) -> str:
+        pass
+
+class Service1(Service):
+    def process(self) -> str:
+        return "Service1"
+
+class Service2(Service):
+    def process(self) -> str:
+        return "Service2"
+
+# Now can use: Service.of("Service1") or Service.of("Service2")
+```
+
+## Quick Reference
+
+| Pattern | Use Case | Example |
+|---------|----------|---------|
+| `Typed` | Immutable config, thread-safe data | `DatabaseConfig(Typed)` |
+| `MutableTyped` | Dynamic state, frequent updates | `UserSession(MutableTyped)` |
+| `pre_initialize` | Compute derived fields | Set `_area` from width/height |
+| `post_initialize` | Side effects, logging | Print "Created user..." |
+| `Registry + Typed` | Polymorphic services with config | `Service(Registry)` + `ServiceConfig(Typed)` |
+| Private attrs | Internal state, caching | `_cache: dict = PrivateAttr()` |
+
+## Full Example: Complete Pattern
+
+```python
+from morphic import Typed, MutableTyped, Registry
+from pydantic import PrivateAttr
+from abc import ABC, abstractmethod
+from typing import Optional
+from datetime import datetime
+
+# 1. Immutable configuration
+class ProcessorConfig(Typed):
+    name: str
+    batch_size: int = 100
+    timeout: float = 30.0
+
+# 2. Mutable state
+class ProcessorState(MutableTyped):
+    processed_count: int = 0
+    last_run: Optional[datetime] = None
+    is_running: bool = False
+
+# 3. Registry-based processor with Typed config
+class Processor(Registry, ABC):
+    def __init__(self, config: ProcessorConfig):
+        self.config = config
+        self.state = ProcessorState()
+        self._cache: dict = PrivateAttr(default_factory=dict)
+    
+    @abstractmethod
+    def process_batch(self, data: list) -> int:
+        pass
+    
+    def run(self, data: list) -> str:
+        self.state.is_running = True
+        self.state.last_run = datetime.now()
+        
+        processed = self.process_batch(data)
+        self.state.processed_count += processed
+        
+        self.state.is_running = False
+        return f"Processed {processed} items"
+
+class BatchProcessor(Processor):
+    def process_batch(self, data: list) -> int:
+        batch_size = self.config.batch_size
+        # Process in batches
+        return min(len(data), batch_size)
+
+# Usage
+config = ProcessorConfig(name="DataProcessor", batch_size=50)
+processor = Processor.of("BatchProcessor", config=config)
+
+result = processor.run(list(range(100)))
+print(result)  # "Processed 50 items"
+print(f"Total processed: {processor.state.processed_count}")  # 50
+print(f"Running: {processor.state.is_running}")  # False
+```
+
+For more details, see:
+- [Typed Documentation](mdc:morphic/docs/user-guide/typed.md)
+- [Registry Documentation](mdc:morphic/docs/user-guide/registry.md)
