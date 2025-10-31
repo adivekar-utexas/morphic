@@ -24,71 +24,8 @@ from pydantic_core import PydanticUndefined
 
 from .autoenum import AutoEnum
 from .registry import Registry
+from .string import format_exception_msg
 from .structs import INBUILT_COLLECTIONS, map_collection
-
-
-def format_exception_msg(ex: Exception, short: bool = False, prefix: Optional[str] = None) -> str:
-    """
-    Format exception messages with optional traceback information.
-
-    Provides a utility for formatting exception messages with configurable detail levels
-    and optional prefixes. Used internally by Typed for enhanced error reporting.
-
-    Args:
-        ex (Exception): The exception to format.
-        short (bool, optional): Whether to use short format for traceback.
-            Defaults to False (full traceback).
-        prefix (Optional[str], optional): Optional prefix to add to the message.
-            Defaults to None.
-
-    Returns:
-        str: Formatted exception message with traceback information.
-
-    Examples:
-        ```python
-        try:
-            raise ValueError("Something went wrong")
-        except Exception as e:
-            # Short format
-            short_msg = format_exception_msg(e, short=True)
-            print(short_msg)
-            # "ValueError: 'Something went wrong'\\nTrace: file.py#123; "
-
-            # Full format with prefix
-            full_msg = format_exception_msg(e, prefix="Validation Error")
-            print(full_msg)
-            # "Validation Error: ValueError: 'Something went wrong'\\nTraceback:\\n\\tfile.py line 123, in function..."
-        ```
-
-    Note:
-        This is primarily an internal utility function used by Typed's error handling.
-        Reference: https://stackoverflow.com/a/64212552
-    """
-    ## Ref: https://stackoverflow.com/a/64212552
-    tb = ex.__traceback__
-    trace = []
-    while tb is not None:
-        trace.append(
-            {
-                "filename": tb.tb_frame.f_code.co_filename,
-                "function_name": tb.tb_frame.f_code.co_name,
-                "lineno": tb.tb_lineno,
-            }
-        )
-        tb = tb.tb_next
-    if prefix is not None:
-        out = f'{prefix}: {type(ex).__name__}: "{str(ex)}"'
-    else:
-        out = f'{type(ex).__name__}: "{str(ex)}"'
-    if short:
-        out += "\nTrace: "
-        for trace_line in trace:
-            out += f"{trace_line['filename']}#{trace_line['lineno']}; "
-    else:
-        out += "\nTraceback:"
-        for trace_line in trace:
-            out += f"\n\t{trace_line['filename']} line {trace_line['lineno']}, in {trace_line['function_name']}..."
-    return out.strip()
 
 
 class classproperty(property):

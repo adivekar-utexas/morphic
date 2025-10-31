@@ -1747,15 +1747,13 @@ class TestRegistry:
                 return [
                     (Protocol.HTTP, ServiceCategory.WEB_SERVER),
                     (Protocol.HTTPS, ServiceCategory.WEB_SERVER),
-                    ("web", "service")
+                    ("web", "service"),
                 ]
 
         class FileService(NetworkService):
             @classmethod
             def _registry_keys(cls):
-                return [
-                    (Protocol.FTP, ServiceCategory.FILE_SERVER)
-                ]
+                return [(Protocol.FTP, ServiceCategory.FILE_SERVER)]
 
         # Test tuple keys with AutoEnum
         WebClass = NetworkService.get_subclass((Protocol.HTTP, ServiceCategory.WEB_SERVER))
@@ -2098,33 +2096,33 @@ class TestRegistry:
                 return f"{self.name} says Tweet!"
 
         # Test getting subclass by class name (always works)
-        DogClass = AbstractAnimal.get_subclass('Dog')
+        DogClass = AbstractAnimal.get_subclass("Dog")
         assert DogClass is Dog
-        dog = DogClass(name='Sparky')
+        dog = DogClass(name="Sparky")
         assert isinstance(dog, Dog)
-        assert dog.name == 'Sparky'
+        assert dog.name == "Sparky"
 
         # Test getting subclass by AutoEnum (aliases)
         CatClass = AbstractAnimal.get_subclass(AnimalType.CAT)
         assert CatClass is Cat
-        cat = CatClass(name='Fluffy')
+        cat = CatClass(name="Fluffy")
         assert isinstance(cat, Cat)
-        assert cat.name == 'Fluffy'
+        assert cat.name == "Fluffy"
 
         # Test getting subclass by AutoEnum (_registry_keys)
         BirdClass = AbstractAnimal.get_subclass(AnimalType.BIRD)
         assert BirdClass is Bird
-        bird = BirdClass(name='Polly')
+        bird = BirdClass(name="Polly")
         assert isinstance(bird, Bird)
-        assert bird.name == 'Polly'
+        assert bird.name == "Polly"
 
         # Test the factory method works too
-        cat2 = AbstractAnimal.of(AnimalType.CAT, name='Shadow')
+        cat2 = AbstractAnimal.of(AnimalType.CAT, name="Shadow")
         assert isinstance(cat2, Cat)
-        assert cat2.name == 'Shadow'
+        assert cat2.name == "Shadow"
         assert cat2.speak() == "Shadow says Meow!"
 
-        bird2 = AbstractAnimal.of(AnimalType.BIRD, name='Chirpy')
+        bird2 = AbstractAnimal.of(AnimalType.BIRD, name="Chirpy")
         assert isinstance(bird2, Bird)
-        assert bird2.name == 'Chirpy'
+        assert bird2.name == "Chirpy"
         assert bird2.speak() == "Chirpy says Tweet!"

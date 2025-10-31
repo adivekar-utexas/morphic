@@ -16,11 +16,13 @@ nav:
     - AutoEnum: user-guide/autoenum.md
     - Typed: user-guide/typed.md
     - Typed + Registry Integration: user-guide/typed-registry-integration.md
+    - String Utilities: user-guide/string.md
   - API Reference:
     - Overview: api/index.md
     - Registry: api/registry.md
     - AutoEnum: api/autoenum.md
     - Typed: api/typed.md
+    - String: api/string.md
   - Examples: examples.md
   - Contributing: contributing.md
   - Changelog: changelog.md

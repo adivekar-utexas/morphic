@@ -9,6 +9,7 @@ from .function import (
     get_current_fn_name,
     get_fn_args,
     get_fn_spec,
+    is_abstract,
     is_function,
     params_to_call_str,
     parsed_fn_source,
@@ -18,6 +19,41 @@ from .function import (
 # Import utilities organized by module
 from .imports import optional_dependency
 from .registry import Registry
+
+# String utilities
+from .string import (
+    BaseConverter,
+    convert_case,
+    convert_number,
+    convert_size_from_bytes,
+    convert_size_to_bytes,
+    convert_str_to_type,
+    convert_time_from_seconds,
+    detect_case,
+    format_exception_msg,
+    fuzzy_match,
+    get_num_zeros_to_pad,
+    hash,
+    is_empty,
+    is_float,
+    is_fuzzy_match,
+    is_int,
+    is_not_empty_bytes,
+    is_stream,
+    join_human,
+    normalize,
+    now,
+    parse_datetime,
+    punct_normalize,
+    random_name,
+    readable_bytes,
+    readable_datetime,
+    readable_number,
+    readable_seconds,
+    str_format_args,
+    whitespace_normalize,
+    zfill,
+)
 from .structs import (
     all_are_false,
     all_are_none,
@@ -99,6 +135,7 @@ __all__ = [
     # Function utilities
     "fn_str",
     "get_current_fn_name",
+    "is_abstract",
     "is_function",
     "call_str_to_params",
     "params_to_call_str",
@@ -108,4 +145,43 @@ __all__ = [
     "get_fn_spec",
     "get_fn_args",
     "filter_kwargs",
+    # String utilities - Text normalization
+    "normalize",
+    "punct_normalize",
+    "whitespace_normalize",
+    # String utilities - Case conversion
+    "detect_case",
+    "convert_case",
+    # String utilities - Formatting
+    "readable_bytes",
+    "convert_size_from_bytes",
+    "convert_size_to_bytes",
+    "readable_seconds",
+    "convert_time_from_seconds",
+    "readable_number",
+    "convert_number",
+    # String utilities - Validation
+    "is_int",
+    "is_float",
+    "is_empty",
+    "is_not_empty_bytes",
+    "is_stream",
+    # String utilities - Core utilities
+    "hash",
+    "join_human",
+    "random_name",
+    "zfill",
+    "get_num_zeros_to_pad",
+    "BaseConverter",
+    # String utilities - DateTime
+    "parse_datetime",
+    "now",
+    "readable_datetime",
+    # String utilities - Matching
+    "fuzzy_match",
+    "is_fuzzy_match",
+    # String utilities - Advanced
+    "str_format_args",
+    "convert_str_to_type",
+    "format_exception_msg",
 ]

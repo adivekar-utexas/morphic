@@ -4,43 +4,8 @@ from abc import ABC
 from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple, Type, Union
 
 from .autoenum import AutoEnum
-
-
-def _is_abstract(cls: Type) -> bool:
-    """Check if a class is abstract."""
-    return ABC in cls.__bases__
-
-
-def _str_normalize(
-    x: Union[str, AutoEnum], remove: Optional[Union[str, Tuple, List, Set]] = (" ", "-", "_")
-) -> str:
-    """Normalize string or AutoEnum by removing specified characters and converting to lowercase."""
-    if remove is None:
-        remove = set()
-    if isinstance(remove, str):
-        remove = set(remove)
-
-    out = str(x)
-    if remove:
-        for rem in set(remove).intersection(set(out)):
-            out = out.replace(rem, "")
-    return out.lower()
-
-
-def _as_list(item) -> List:
-    """Convert item to list."""
-    if isinstance(item, (list, tuple, set)):
-        return list(item)
-    return [item]
-
-
-def _as_set(item) -> Set:
-    """Convert item to set."""
-    if isinstance(item, set):
-        return item
-    if isinstance(item, (list, tuple)):
-        return set(item)
-    return {item}
+from .string import normalize as normalize_string
+from .structs import as_list, as_set
 
 
 class Registry(ABC):
@@ -266,6 +231,9 @@ class Registry(ABC):
 
     def __init_subclass__(cls, **kwargs):
         """Register any subclass with the base class."""
+        # Import here to avoid circular imports.
+        from .function import is_abstract
+
         super().__init_subclass__(**kwargs)
 
         if cls in Registry.__subclasses__():
@@ -274,7 +242,7 @@ class Registry(ABC):
             cls._registry_base_class = cls
         else:
             # Current class is a subclass of a Registry-subclass
-            if not _is_abstract(cls) and not cls._dont_register:
+            if not is_abstract(cls) and not cls._dont_register:
                 cls._register_subclass()
 
     @classmethod
@@ -283,15 +251,15 @@ class Registry(ABC):
         keys_to_register = []
 
         # Add class name and aliases
-        for key in [cls.__name__] + _as_list(cls.aliases) + _as_list(cls._registry_keys()):
+        for key in [cls.__name__] + as_list(cls.aliases) + as_list(cls._registry_keys()):
             if key is None:
                 continue
             elif isinstance(key, (str, AutoEnum)):
                 # Case-insensitive matching for strings and AutoEnum
-                key = _str_normalize(key)
+                key = normalize_string(key)
             elif isinstance(key, tuple):
                 key = tuple(
-                    _str_normalize(key_part) if isinstance(key_part, (str, AutoEnum)) else key_part
+                    normalize_string(key_part) if isinstance(key_part, (str, AutoEnum)) else key_part
                     for key_part in key
                 )
             keys_to_register.append(key)
@@ -303,7 +271,7 @@ class Registry(ABC):
         """Add subclass to registry under specified keys."""
         subclass_name = subclass.__name__
 
-        for k in _as_set(keys_to_register):  # Drop duplicates
+        for k in as_set(keys_to_register):  # Drop duplicates
             if k not in cls._registry:
                 cls._registry[k] = {subclass_name: subclass}
                 continue
@@ -404,11 +372,11 @@ class Registry(ABC):
             scoping like the `of()` method. Use `of()` for hierarchy-aware instantiation.
         """
         if isinstance(key, (str, AutoEnum)):
-            subclasses = cls._registry.get(_str_normalize(key))
+            subclasses = cls._registry.get(normalize_string(key))
         elif isinstance(key, tuple):
             # Normalize tuple keys the same way as during registration
             normalized_key = tuple(
-                _str_normalize(key_part) if isinstance(key_part, (str, AutoEnum)) else key_part
+                normalize_string(key_part) if isinstance(key_part, (str, AutoEnum)) else key_part
                 for key_part in key
             )
             subclasses = cls._registry.get(normalized_key)
@@ -514,13 +482,16 @@ class Registry(ABC):
             This method respects the registry hierarchy - it only returns subclasses of the
             calling class, not subclasses of sibling classes.
         """
+        # Import here to avoid circular imports.
+        from .function import is_abstract
+
         available_subclasses = set()
 
         for registered_dict in cls._registry.values():
             for subclass in registered_dict.values():
                 if subclass == cls._registry_base_class:
                     continue
-                if _is_abstract(subclass) and not keep_abstract:
+                if is_abstract(subclass) and not keep_abstract:
                     continue
                 if isinstance(subclass, type) and issubclass(subclass, cls):
                     available_subclasses.add(subclass)
@@ -535,27 +506,30 @@ class Registry(ABC):
         For concrete classes, this can return the class itself if the registry_key matches.
         For abstract classes, this searches only within direct and indirect subclasses.
         """
+        # Import here to avoid circular imports.
+        from .function import is_abstract
+
         # If the class is concrete (not abstract) and registry_key matches the class name or aliases
-        if not _is_abstract(cls):
+        if not is_abstract(cls):
             # Check if registry_key matches this concrete class
-            class_keys = [cls.__name__] + _as_list(cls.aliases) + _as_list(cls._registry_keys())
+            class_keys = [cls.__name__] + as_list(cls.aliases) + as_list(cls._registry_keys())
 
             for class_key in class_keys:
                 if class_key is None:
                     continue
                 elif isinstance(class_key, (str, AutoEnum)):
                     if (
-                        _str_normalize(class_key) == _str_normalize(registry_key)
+                        normalize_string(class_key) == normalize_string(registry_key)
                         if isinstance(registry_key, (str, AutoEnum))
                         else False
                     ):
                         return cls
                 elif isinstance(class_key, tuple) and isinstance(registry_key, tuple):
                     normalized_class_key = tuple(
-                        _str_normalize(k) if isinstance(k, (str, AutoEnum)) else k for k in class_key
+                        normalize_string(k) if isinstance(k, (str, AutoEnum)) else k for k in class_key
                     )
                     normalized_registry_key = tuple(
-                        _str_normalize(k) if isinstance(k, (str, AutoEnum)) else k for k in registry_key
+                        normalize_string(k) if isinstance(k, (str, AutoEnum)) else k for k in registry_key
                     )
                     if normalized_class_key == normalized_registry_key:
                         return cls
@@ -567,10 +541,10 @@ class Registry(ABC):
 
         # Normalize the search key
         if isinstance(registry_key, (str, AutoEnum)):
-            search_key = _str_normalize(registry_key)
+            search_key = normalize_string(registry_key)
         elif isinstance(registry_key, tuple):
             search_key = tuple(
-                _str_normalize(key_part) if isinstance(key_part, (str, AutoEnum)) else key_part
+                normalize_string(key_part) if isinstance(key_part, (str, AutoEnum)) else key_part
                 for key_part in registry_key
             )
         else:
@@ -600,7 +574,7 @@ class Registry(ABC):
         keys_to_remove = []
         for key, registered_dict in cls._registry.items():
             for subclass_name in list(registered_dict.keys()):
-                if _str_normalize(subclass_name) == _str_normalize(name):
+                if normalize_string(subclass_name) == normalize_string(name):
                     registered_dict.pop(subclass_name, None)
             # Mark empty dictionaries for removal
             if not registered_dict:
@@ -912,6 +886,9 @@ class Registry(ABC):
             subclasses(): Get all registered subclasses in hierarchy
             _get_hierarchical_subclass(): Internal hierarchical lookup method
         """
+        # Import here to avoid circular imports.
+        from .function import is_abstract
+
         # Prevent calling 'of' directly on Registry class
         if cls is Registry:
             raise TypeError(
@@ -928,7 +905,7 @@ class Registry(ABC):
 
         # Handle case where no registry_key is provided
         if registry_key is None:
-            if not _is_abstract(cls):
+            if not is_abstract(cls):
                 # Concrete class without registry_key - instantiate directly
                 return cls(*args, **kwargs)
             else:
@@ -946,14 +923,14 @@ class Registry(ABC):
             available_classes = set()
 
             # If concrete, the class itself is available
-            if not _is_abstract(cls):
+            if not is_abstract(cls):
                 available_classes.add(cls.__name__)
 
             # Add subclasses
             for sub in cls.subclasses(keep_abstract=True):
                 available_classes.add(sub.__name__)
                 if hasattr(sub, "aliases"):
-                    available_classes.update(_as_list(sub.aliases))
+                    available_classes.update(as_list(sub.aliases))
 
             available_keys = sorted(available_classes)
             raise KeyError(

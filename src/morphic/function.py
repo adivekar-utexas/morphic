@@ -7,11 +7,17 @@ import re
 import sys
 import textwrap
 import types
+from abc import ABC
 from ast import literal_eval
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union
 
 from .structs import default
 from .typed import Typed
+
+
+def is_abstract(Class: Type) -> bool:
+    """Check if a class is abstract."""
+    return ABC in Class.__bases__
 
 
 def fn_str(fn: Callable) -> str:

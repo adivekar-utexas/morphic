@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from morphic.registry import Registry
-from morphic.typed import Typed, MutableTyped
+from morphic.typed import MutableTyped, Typed
 
 
 class TestTypedRegistryIntegration:
@@ -501,7 +501,7 @@ class TestMutableTypedRegistryIntegration:
                 frozen=False,
                 validate_assignment=True,  # Enable validation for this test
             )
-            
+
             name: str
             port: int
             enabled: bool = True
@@ -591,7 +591,7 @@ class TestMutableTypedRegistryIntegration:
             name="Alice",
             age=30,
             address=Address(street="123 Main St", city="Springfield", zipcode="12345"),
-            department="engineering"
+            department="engineering",
         )
         assert isinstance(employee, Employee)
         assert employee.name == "Alice"
@@ -723,7 +723,7 @@ class TestMutableTypedRegistryIntegration:
                 frozen=False,
                 validate_assignment=True,  # Enable validation for this test
             )
-            
+
             name: str
             port: int
 

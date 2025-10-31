@@ -30,6 +30,18 @@ Enhanced data modeling with validation and serialization.
 **Key Classes:**
 - `Typed` - Base class for data models with validation
 
+### [String](string.md)
+Comprehensive string manipulation, formatting, and validation utilities.
+
+**Key Functions:**
+- Text Normalization: `normalize()`, `punct_normalize()`, `whitespace_normalize()`
+- Case Conversion: `detect_case()`, `convert_case()`
+- Formatting: `readable_bytes()`, `readable_seconds()`, `readable_number()`
+- Validation: `is_int()`, `is_float()`, `is_empty()`, `is_stream()`
+- Utilities: `hash()`, `join_human()`, `random_name()`, `zfill()`
+- DateTime: `parse_datetime()`, `now()`, `readable_datetime()`
+- Matching: `fuzzy_match()`, `is_fuzzy_match()`
+
 ## Module Overview
 
 The Morphic library is organized into focused modules:
@@ -38,8 +50,12 @@ The Morphic library is organized into focused modules:
 morphic/
 ├── __init__.py          # Main exports
 ├── registry.py          # Registry system implementation
-├── autoenum.py         # AutoEnum functionality
-└── Typed.py        # Typed base class
+├── autoenum.py          # AutoEnum functionality
+├── typed.py             # Typed base class
+├── string.py            # String utilities
+├── function.py          # Function utilities
+├── structs.py           # Data structure utilities
+└── imports.py           # Import utilities
 ```
 
 ## Quick Reference
@@ -54,6 +70,12 @@ from morphic import Registry, AutoEnum, Typed
 from morphic.registry import Registry
 from morphic.autoenum import AutoEnum
 from morphic.typed import Typed
+
+# Import string utilities
+from morphic.string import (
+    normalize, convert_case, readable_bytes,
+    hash, join_human, random_name
+)
 ```
 
 ### Common Usage Patterns
