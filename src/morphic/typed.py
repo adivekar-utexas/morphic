@@ -23,49 +23,10 @@ from pydantic.errors import PydanticSchemaGenerationError
 from pydantic_core import PydanticUndefined
 
 from .autoenum import AutoEnum
+from .classproperty import classproperty
 from .registry import Registry
 from .string import format_exception_msg
 from .structs import INBUILT_COLLECTIONS, map_collection
-
-
-class classproperty(property):
-    """
-    Descriptor that allows properties to be accessed at the class level.
-
-    Similar to the built-in `property` decorator, but works on classes rather than instances.
-    This allows defining computed properties that can be accessed directly on the class
-    without requiring an instance.
-
-    Examples:
-        ```python
-        class MyClass:
-            _name = "Example"
-
-            @classproperty
-            def name(cls):
-                return cls._name
-
-        # Access directly on class
-        print(MyClass.name)  # "Example"
-
-        # Also works on instances
-        instance = MyClass()
-        print(instance.name)  # "Example"
-        ```
-
-    Note:
-        This is used internally by Typed for class-level properties like `class_name`
-        and `param_names`. Reference: https://stackoverflow.com/a/13624858/4900327
-    """
-
-    def __get__(self, obj, objtype=None):
-        return super(classproperty, self).__get__(objtype)
-
-    def __set__(self, obj, value):
-        super(classproperty, self).__set__(type(obj), value)
-
-    def __delete__(self, obj):
-        super(classproperty, self).__delete__(type(obj))
 
 
 def _Typed_pformat(data: Any) -> str:

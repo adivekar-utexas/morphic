@@ -1,6 +1,7 @@
 """Morphic: Dynamic Python utilities for class registration, creation, and type checking."""
 
 from .autoenum import AutoEnum, alias, auto
+from .classproperty import classproperty
 from .function import (
     FunctionSpec,
     call_str_to_params,
@@ -98,6 +99,7 @@ __all__ = [
     "MutableTyped",
     "validate",
     "ValidationError",
+    "classproperty",
     # Import utilities
     "optional_dependency",
     # Language utilities
