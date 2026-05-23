@@ -31,10 +31,8 @@ slots cleanly into the existing pipeline.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
-import tempfile
 import textwrap
 from pathlib import Path
 from typing import Annotated, List, Optional
@@ -42,7 +40,6 @@ from typing import Annotated, List, Optional
 import pytest
 
 from morphic import Typed, TypedPath
-
 
 # ---------------------------------------------------------------------------
 # Subprocess helper for end-to-end CLI integration tests.
@@ -1004,3 +1001,357 @@ class TestWeirdEdgeCases:
         ## explicitly converted (str()):
         o = Outer(inner=str(MyPath(path)))
         assert o.inner.name == "fspath"
+
+
+# ===========================================================================
+# Registry dispatch composed with TypedPath
+# ===========================================================================
+
+
+class TestTypedPathWithRegistryDispatch:
+    """The ``Annotated[AbstractBase, TypedPath]`` + ``__type__`` pattern.
+
+    Scenario: a field is annotated with an abstract ``Typed + Registry``
+    base, AND has the ``TypedPath`` marker. The on-disk JSON/YAML file
+    contains a ``__type__`` discriminator key plus subclass-specific
+    fields (some of which themselves use ``TypedPath`` for relative paths).
+
+    The contract: relative paths declared on the SUBCLASS (not on the
+    abstract base) must still be resolved against the loaded file's
+    directory. Without the discriminator-aware dispatch in
+    ``_typed_path_resolve_in_dict``, those subclass-only TypedPath
+    fields would be invisible during the in-band recursive load, and
+    their relative paths would later be resolved against the user's
+    cwd instead of the parent file's directory.
+    """
+
+    def _make_classes(self):
+        """Build a fresh class hierarchy for each test (avoids Registry
+        cross-test pollution)."""
+        from abc import ABC
+
+        from morphic import Registry
+
+        class LeafConfig(Typed):
+            label: str
+            count: int = 0
+
+        class AbstractBase(Typed, Registry, ABC):
+            """Registry root. Has no TypedPath fields itself."""
+
+            base_field: str = "default-base"
+
+        class ConcreteWithPath(AbstractBase):
+            """Subclass that adds a TypedPath-annotated field."""
+
+            aliases = ("with_path",)
+            leaf: Annotated[LeafConfig, TypedPath]
+
+        class ConcreteWithoutPath(AbstractBase):
+            """Subclass that adds a non-TypedPath field."""
+
+            aliases = ("without_path",)
+            number: int = 7
+
+        class Holder(Typed):
+            target: Annotated[AbstractBase, TypedPath]
+
+        return LeafConfig, AbstractBase, ConcreteWithPath, ConcreteWithoutPath, Holder
+
+    def test_subclass_typed_path_field_resolves_relative_path_against_parent_file(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The core regression test for the agent's fix.
+
+        - Outer config file references ``../leaf/leaf.json`` for the
+          subclass-only ``leaf`` field.
+        - Without the fix: the abstract base's ``model_fields`` doesn't
+          include ``leaf``, so the recursive load skips it. Later
+          Pydantic tries to resolve ``../leaf/leaf.json`` against the
+          user's cwd → ``FileNotFoundError``.
+        - With the fix: the discriminator is read, the concrete
+          subclass is selected, ``leaf`` is found in its
+          ``model_fields``, and the relative path is resolved against
+          the parent file's directory.
+        """
+        LeafConfig, AbstractBase, ConcreteWithPath, ConcreteWithoutPath, Holder = self._make_classes()
+
+        (tmp_path / "configs" / "outer").mkdir(parents=True)
+        (tmp_path / "configs" / "leaf").mkdir(parents=True)
+
+        (tmp_path / "configs" / "leaf" / "leaf.json").write_text(
+            json.dumps(
+                {
+                    "label": "leaf-from-file",
+                    "count": 99,
+                }
+            )
+        )
+        (tmp_path / "configs" / "outer" / "with_path.json").write_text(
+            json.dumps(
+                {
+                    "__type__": "with_path",
+                    "leaf": "../leaf/leaf.json",  # subclass-only TypedPath field
+                }
+            )
+        )
+
+        h = Holder(
+            target=str(tmp_path / "configs" / "outer" / "with_path.json"),
+        )
+        assert type(h.target) is ConcreteWithPath
+        assert h.target.leaf.label == "leaf-from-file"
+        assert h.target.leaf.count == 99
+
+    def test_subclass_with_no_typed_path_fields_works(self, tmp_path: Path) -> None:
+        """Switching to the concrete subclass also works when the subclass
+        has no TypedPath fields at all (the field iteration just finds
+        nothing to load, which is fine)."""
+        LeafConfig, AbstractBase, ConcreteWithPath, ConcreteWithoutPath, Holder = self._make_classes()
+
+        path = tmp_path / "without.json"
+        path.write_text(json.dumps({"__type__": "without_path", "number": 42}))
+
+        h = Holder(target=str(path))
+        assert type(h.target) is ConcreteWithoutPath
+        assert h.target.number == 42
+
+    def test_unknown_discriminator_falls_through_gracefully(self, tmp_path: Path) -> None:
+        """If the discriminator value isn't a registered subclass key,
+        the dispatch silently falls back to the abstract base. The
+        actual subclass-resolution error surfaces later, during normal
+        Pydantic validation, with the standard Registry message."""
+        LeafConfig, AbstractBase, ConcreteWithPath, ConcreteWithoutPath, Holder = self._make_classes()
+
+        path = tmp_path / "bogus.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "__type__": "totally_does_not_exist",
+                    "leaf": "leaf.json",
+                }
+            )
+        )
+        with pytest.raises((KeyError, ValueError)):
+            Holder(target=str(path))
+
+    def test_alias_in_discriminator_works(self, tmp_path: Path) -> None:
+        """The discriminator can use any alias the subclass declared
+        (not just the class name)."""
+        LeafConfig, AbstractBase, ConcreteWithPath, ConcreteWithoutPath, Holder = self._make_classes()
+
+        (tmp_path / "leaf").mkdir()
+        (tmp_path / "leaf" / "leaf.json").write_text(json.dumps({"label": "L"}))
+        outer = tmp_path / "outer.json"
+        outer.write_text(
+            json.dumps(
+                {
+                    "__type__": "with_path",  # alias declared on ConcreteWithPath
+                    "leaf": "leaf/leaf.json",
+                }
+            )
+        )
+
+        h = Holder(target=str(outer))
+        assert type(h.target) is ConcreteWithPath
+        assert h.target.leaf.label == "L"
+
+    def test_no_discriminator_no_dispatch_keeps_abstract_iteration(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """If the loaded dict has no ``__type__`` key, the dispatch step
+        is a no-op — ``cls`` stays as the abstract base. The dict is
+        validated against the abstract base's fields (which may or may
+        not be enough to instantiate, depending on whether the abstract
+        base has any ``@abstractmethod`` decorations enforcing
+        abstractness).
+
+        This test pins the no-dispatch path: the path-load step doesn't
+        crash on a dict without ``__type__``, and doesn't silently
+        invent a subclass.
+        """
+        LeafConfig, AbstractBase, ConcreteWithPath, ConcreteWithoutPath, Holder = self._make_classes()
+
+        path = tmp_path / "no_disc.json"
+        path.write_text(json.dumps({"base_field": "no-disc"}))
+
+        ## With this AbstractBase (no @abstractmethod), the dict is
+        ## actually instantiable as the bare base class. The important
+        ## point is that the result is the abstract base type, NOT
+        ## some accidentally-dispatched subclass.
+        h = Holder(target=str(path))
+        assert type(h.target) is AbstractBase
+        assert h.target.base_field == "no-disc"
+
+    def test_pre_built_subclass_instance_preserves_identity(self, tmp_path: Path) -> None:
+        """Passing a pre-built concrete subclass instance still preserves
+        identity. The fix only triggers when the value is a path
+        (loaded from disk), not when it's already an instance."""
+        LeafConfig, AbstractBase, ConcreteWithPath, ConcreteWithoutPath, Holder = self._make_classes()
+
+        ## Construct the concrete subclass with a pre-built leaf:
+        leaf = LeafConfig(label="prebuilt", count=1)
+        target = ConcreteWithPath(leaf=leaf)
+
+        h = Holder(target=target)
+        assert h.target is target
+        assert h.target.leaf is leaf
+
+    def test_dict_input_with_discriminator_no_path(self, tmp_path: Path) -> None:
+        """Programmatic dict with ``__type__`` works even without any
+        file loading (this exercises Typed's ``__new__`` discriminator
+        path, which is independent of TypedPath but also lives in
+        morphic; we verify the two compose)."""
+        LeafConfig, AbstractBase, ConcreteWithPath, ConcreteWithoutPath, Holder = self._make_classes()
+
+        leaf_path = tmp_path / "l.json"
+        leaf_path.write_text(json.dumps({"label": "L", "count": 5}))
+
+        h = Holder(
+            target={
+                "__type__": "with_path",
+                "leaf": str(leaf_path),  # absolute path inside an inline dict
+            }
+        )
+        assert type(h.target) is ConcreteWithPath
+        assert h.target.leaf.label == "L"
+        assert h.target.leaf.count == 5
+
+    def test_three_level_nesting_with_registry_dispatch_at_top(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Holder -> abstract Registry (resolved via __type__) -> concrete
+        subclass with TypedPath -> nested LeafConfig with its own TypedPath
+        field. Every level's relative paths must resolve against the
+        right parent."""
+        from abc import ABC
+
+        from morphic import Registry
+
+        class Bottom(Typed):
+            value: str
+
+        class Middle(Typed):
+            label: str
+            bottom: Annotated[Bottom, TypedPath]
+
+        class TopBase(Typed, Registry, ABC):
+            pass
+
+        class TopConcrete(TopBase):
+            aliases = ("top_concrete",)
+            middle: Annotated[Middle, TypedPath]
+
+        class Holder3(Typed):
+            top: Annotated[TopBase, TypedPath]
+
+        (tmp_path / "top").mkdir()
+        (tmp_path / "middle").mkdir()
+        (tmp_path / "bottom").mkdir()
+
+        (tmp_path / "bottom" / "bottom.json").write_text(json.dumps({"value": "leaf"}))
+        (tmp_path / "middle" / "middle.json").write_text(
+            json.dumps(
+                {
+                    "label": "middle-label",
+                    "bottom": "../bottom/bottom.json",
+                }
+            )
+        )
+        (tmp_path / "top" / "top.json").write_text(
+            json.dumps(
+                {
+                    "__type__": "top_concrete",
+                    "middle": "../middle/middle.json",
+                }
+            )
+        )
+
+        h = Holder3(top=str(tmp_path / "top" / "top.json"))
+        assert type(h.top) is TopConcrete
+        assert h.top.middle.label == "middle-label"
+        assert h.top.middle.bottom.value == "leaf"
+
+    def test_yaml_with_registry_discriminator(self, tmp_path: Path) -> None:
+        """The discriminator dispatch also works for YAML files."""
+        yaml = pytest.importorskip("yaml")
+
+        LeafConfig, AbstractBase, ConcreteWithPath, ConcreteWithoutPath, Holder = self._make_classes()
+
+        (tmp_path / "leaf").mkdir()
+        with open(tmp_path / "leaf" / "leaf.yaml", "w") as f:
+            yaml.safe_dump({"label": "yaml-leaf", "count": 11}, f)
+        with open(tmp_path / "outer.yaml", "w") as f:
+            yaml.safe_dump(
+                {
+                    "__type__": "with_path",
+                    "leaf": "leaf/leaf.yaml",
+                },
+                f,
+            )
+
+        h = Holder(target=str(tmp_path / "outer.yaml"))
+        assert type(h.target) is ConcreteWithPath
+        assert h.target.leaf.label == "yaml-leaf"
+        assert h.target.leaf.count == 11
+
+    def test_cli_with_registry_discriminator_in_loaded_file(self, tmp_path: Path) -> None:
+        """End-to-end: CLI loads a file whose content has ``__type__``
+        plus a relative path on a subclass-only TypedPath field."""
+        LeafConfig, AbstractBase, ConcreteWithPath, ConcreteWithoutPath, Holder = self._make_classes()
+
+        (tmp_path / "outer").mkdir()
+        (tmp_path / "leaf").mkdir()
+        (tmp_path / "leaf" / "leaf.json").write_text(json.dumps({"label": "from-cli"}))
+        (tmp_path / "outer" / "with.json").write_text(
+            json.dumps(
+                {
+                    "__type__": "with_path",
+                    "leaf": "../leaf/leaf.json",
+                }
+            )
+        )
+
+        h = Holder.parse_cli_args(
+            [
+                "--target",
+                str(tmp_path / "outer" / "with.json"),
+            ]
+        )
+        assert type(h.target) is ConcreteWithPath
+        assert h.target.leaf.label == "from-cli"
+
+    def test_non_registry_inner_type_unaffected(self, tmp_path: Path) -> None:
+        """Plain ``Annotated[ConcreteTyped, TypedPath]`` (no Registry) is
+        unaffected by the dispatch logic — the fix only kicks in when
+        ``cls`` is a Registry subclass.
+
+        ``__type__`` is a morphic-reserved sentinel; ``Typed.__init__``
+        silently pops it from any kwargs dict (whether or not the
+        target class is a Registry subclass). So a non-Registry Typed
+        with ``__type__`` in its loaded JSON is constructed normally
+        with the discriminator key discarded.
+
+        The important property this test pins: the fix does NOT call
+        ``cls.get_subclass(...)`` on a non-Registry class (which would
+        raise ``AttributeError: get_subclass``).
+        """
+
+        class Plain(Typed):
+            name: str
+
+        class PlainHolder(Typed):
+            x: Annotated[Plain, TypedPath]
+
+        path = tmp_path / "x.json"
+        path.write_text(json.dumps({"__type__": "ignored", "name": "x"}))
+
+        ## Should construct cleanly: __type__ is silently popped, name
+        ## becomes "x". The fix's `issubclass(cls, Registry)` guard
+        ## prevents an AttributeError on get_subclass.
+        h = PlainHolder(x=str(path))
+        assert h.x.name == "x"
+        assert isinstance(h.x, Plain)

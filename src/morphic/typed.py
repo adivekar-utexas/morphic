@@ -408,11 +408,52 @@ def _typed_path_resolve_in_dict(cls: type, data: Dict[str, Any]) -> None:
     the top level) and from ``_typed_path_recursive_load`` (when a
     parent file is being loaded and its loaded-dict needs to have ITS
     nested TypedPath fields resolved against the parent's directory).
+
+    Registry dispatch: when ``cls`` is a ``Typed + Registry`` abstract
+    base AND ``data`` carries a ``__type__`` discriminator, this method
+    switches ``cls`` to the resolved concrete subclass for the field
+    iteration. This is necessary because TypedPath fields are typically
+    declared on concrete subclasses, not on the abstract base — and
+    without this swap, those fields would be invisible during the
+    in-band recursive load (causing relative paths inside the loaded
+    dict to never get resolved against the parent file's directory).
     """
     if not isinstance(data, dict):
         return
     if not hasattr(cls, "model_fields"):
         return
+
+    ## Registry-dispatch step: when the loaded dict carries a
+    ## ``__type__`` discriminator AND ``cls`` is an abstract Registry
+    ## base, swap to the concrete subclass before iterating fields.
+    ##
+    ## Why: ``cls.model_fields`` reflects only fields declared directly
+    ## on ``cls``. Concrete subclasses commonly add their own
+    ## TypedPath-annotated fields (e.g., a backend-specific config
+    ## field) that the abstract base doesn't have. Without this swap,
+    ## the field iteration below misses those fields and any relative
+    ## paths they reference get evaluated later, after the
+    ## directory-context ContextVar has been reset by the parent's
+    ## try/finally block — leading to "FileNotFoundError" against the
+    ## user's cwd instead of the parent file's directory.
+    ##
+    ## The actual Pydantic-level dispatch (constructing the right
+    ## subclass with the loaded dict) still happens later in the normal
+    ## validation flow via Typed's ``__new__`` discriminator handling.
+    ## This step only borrows the discriminator to choose which class's
+    ## ``model_fields`` to iterate for nested-path resolution.
+    discriminator = data.get(TYPED_REGISTRY_DISCRIMINATOR_KEY)
+    if discriminator is not None and isinstance(cls, type) and issubclass(cls, Registry):
+        try:
+            concrete_cls = cls.get_subclass(discriminator, raise_error=False)
+        except Exception:  # noqa: BLE001
+            ## Any failure to look up the subclass falls through to the
+            ## abstract-base field iteration. The user will see the
+            ## standard Registry KeyError later when Pydantic dispatches.
+            concrete_cls = None
+        if concrete_cls is not None and concrete_cls is not cls:
+            cls = concrete_cls
+
     for fname, finfo in cls.model_fields.items():
         if fname not in data:
             continue
