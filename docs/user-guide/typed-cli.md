@@ -43,6 +43,8 @@ app = App(_cli_parse_args=["--name", "alice", "--seed", "7"])
 | Deep override on a leaf | `--infra.ray-init.address X` | Patches one leaf, leaves siblings untouched |
 | Inline JSON + deep override | `--infra '{...}' --infra.x.y X` | JSON sets baseline, deep override patches on top |
 | Repeated flag | `--name a --name b` | Last one wins |
+| Registry discriminator | `--backend.__type__ http` | Picks the concrete subclass for a `Typed + Registry` field; use [`parse_cli_args`](#pattern-registry-dispatch-with-__type__-discriminator) |
+| Discriminator inside inline JSON | `--backend '{"__type__":"http",...}'` | Same dispatch via inline JSON |
 
 ## Quick reference: what does NOT work by default
 
@@ -82,8 +84,17 @@ class App(Typed):
     name: str = "default"
 
 if __name__ == "__main__":
-    app = App(_cli_parse_args=True)
+    # Recommended entrypoint:
+    app = App.parse_cli_args()
     print(f"Running with seed={app.seed}, mode={app.infra.mode}")
+```
+
+`App.parse_cli_args()` is the recommended entrypoint for all CLI scripts. It is equivalent to `App(_cli_parse_args=True)` for plain Typed models with no `Typed + Registry` fields, but it ALSO handles `__type__` discriminator dispatch when Registry fields are present (see [Pattern: Registry dispatch](#pattern-registry-dispatch-with-__type__-discriminator) below). You can use it everywhere without thinking about whether your config has Registry fields today or might gain them later.
+
+For tests or scripts that want to pass an explicit argv list (e.g., not from `sys.argv`):
+
+```python
+app = App.parse_cli_args(argv=["--seed", "99", "--name", "test"])
 ```
 
 **Invocations that all work:**
@@ -277,15 +288,30 @@ MYAPP_INFRA__MODE=ray python script.py
 
 **Important:** the `env_prefix` is essential. Without a prefix, `MYAPP_SEED=99` becomes just `SEED=99`, which can collide with shell or system env vars (and fields like `home`, `path`, `user` would pick up their shell-var siblings). Always set a prefix in the config dict.
 
-### Pattern: Registry dispatch with per-class CLI
+### Pattern: Registry dispatch with `__type__` discriminator
 
-When you have a [Registry](registry.md) hierarchy and want to choose the concrete subclass at runtime, then build it from CLI flags.
+When your config has a [`Typed + Registry`](typed-registry-integration.md) field — an abstract base class with multiple concrete subclasses — and you want the user to pick the concrete subclass at runtime AND override its specific fields, use the `__type__` discriminator + `parse_cli_args`.
+
+This is the cleanest way to expose pluggable backends, model variants, judge types, etc. on the CLI. It works at any nesting depth and supports nested registries (a Registry field whose subclass has its own Registry field).
 
 **`script.py`:**
 ```python
-import sys
 from abc import ABC
 from morphic import Registry, Typed
+
+# Two-level Registry hierarchy: Backend has nested Auth.
+
+class Auth(Typed, Registry, ABC):
+    pass
+
+class BearerAuth(Auth):
+    aliases = ("bearer",)
+    token: str = ""
+
+class BasicAuth(Auth):
+    aliases = ("basic",)
+    username: str = ""
+    password: str = ""
 
 class Backend(Typed, Registry, ABC):
     name: str
@@ -294,31 +320,105 @@ class HttpBackend(Backend):
     aliases = ("http",)
     url: str = "http://localhost"
     timeout: int = 30
+    auth: Auth = BearerAuth()
 
 class GrpcBackend(Backend):
     aliases = ("grpc",)
     target: str = "localhost:50051"
     use_tls: bool = True
 
-if __name__ == "__main__":
-    # Resolve concrete class from first positional arg:
-    backend_kind = sys.argv[1]
-    remaining = sys.argv[2:]
+class Config(Typed):
+    backend: Backend
+    seed: int = 42
 
-    backend_cls = Backend.get_subclass(backend_kind)   # class lookup, no construction yet
-    backend = backend_cls(_cli_parse_args=remaining)   # construct via CLI on the concrete class
-    print(f"Built {type(backend).__name__}: {backend}")
+if __name__ == "__main__":
+    config = Config.parse_cli_args()
+    print(f"Backend: {type(config.backend).__name__}: {config.backend}")
 ```
 
 **Invocations:**
 ```bash
-python script.py http --name primary --url http://api.example.com --timeout 60
-python script.py grpc --name primary --target prod.example.com:50051 --no-use-tls
+# Pick HttpBackend; set its name and url:
+python script.py \
+    --backend.__type__ http \
+    --backend.name primary \
+    --backend.url http://api.example.com
+
+# Pick GrpcBackend; set its target:
+python script.py \
+    --backend.__type__ grpc \
+    --backend.name primary \
+    --backend.target prod.example.com:50051 \
+    --no-use-tls
+
+# Pick HttpBackend AND a non-default auth subtype:
+python script.py \
+    --backend.__type__ http \
+    --backend.name primary \
+    --backend.auth.__type__ basic \
+    --backend.auth.username alice \
+    --backend.auth.password secret-xyz
+
+# Mix CLI overrides with top-level fields:
+python script.py \
+    --backend.__type__ http \
+    --backend.name primary \
+    --backend.url http://prod \
+    --seed 777
+
+# Get auto-generated --help text — note the help shows the RESOLVED schema
+# (HttpBackend's url and BasicAuth's username/password fields are visible
+# only when the corresponding --*.__type__ flags are present):
+python script.py --backend.__type__ http --backend.auth.__type__ basic --help
 ```
 
-**Why `Backend.get_subclass(...)` not `Backend.of(...)`:** `Backend.of("http", **kwargs)` returns an *instance* of HttpBackend, but you don't have the kwargs yet — they come from argv. `Backend.get_subclass("http")` returns the *class* (no instance), and you then call its `__init__` with `_cli_parse_args=remaining`. See the [Registry guide](registry.md) for more on the difference.
+**How it works (two-pass dispatch):**
 
-**Verified end-to-end:** `tests/test_typed_basesettings.py::TestTypedRegistryBaseSettings` (5 tests).
+1. `Config.parse_cli_args(argv)` first scans `argv` for any `--<path>.__type__ <key>` flags, recording a map like `{("backend",): "http", ("backend", "auth"): "basic"}`.
+2. It strips those flags from argv, then dynamically rebuilds `Config` with the abstract Registry fields replaced by the resolved concrete subclasses (using `pydantic.create_model` under the hood, marked `_dont_register=True` so it does not pollute the Registry).
+3. The rebuilt class is handed to pydantic-settings' normal CLI source. Now `--backend.url` (an `HttpBackend` field) and `--backend.auth.username` (a `BasicAuth` field) are valid flags.
+
+The discriminator key is morphic-internal (a [dunder](https://docs.python.org/3/glossary.html#term-double-underscore) — `__type__` — that Pydantic excludes from field discovery, so it cannot collide with a user-defined field). Subclass lookup uses `Registry.get_subclass(key)` which respects aliases and is case-insensitive.
+
+**Three equivalent ways to construct via discriminator:**
+```python
+# 1. CLI:
+config = Config.parse_cli_args([
+    "--backend.__type__", "http",
+    "--backend.name", "x",
+    "--backend.url", "http://api",
+])
+
+# 2. Direct kwargs on the abstract base — Backend.__new__ redirects to .of():
+backend = Backend(__type__="http", name="x", url="http://api")
+# Equivalent to: Backend.of("http", name="x", url="http://api")
+
+# 3. Dict input to an outer Typed — the discriminator is honored when the
+#    dict is coerced to a Backend instance:
+config = Config(backend={
+    "__type__": "http",
+    "name": "x",
+    "url": "http://api",
+    "auth": {"__type__": "basic", "username": "alice"},
+})
+```
+
+**When to use the legacy positional-dispatch pattern:** If you don't care about the unified config-object flow and just want a simple `python script.py http --name primary --url X` syntax (no `--backend.` prefix), use this older pattern:
+
+```python
+import sys
+from morphic import Backend  # your abstract base
+
+backend_kind = sys.argv[1]
+remaining = sys.argv[2:]
+
+backend_cls = Backend.get_subclass(backend_kind)   # class lookup, no instantiation
+backend = backend_cls(_cli_parse_args=remaining)   # CLI on the concrete class
+```
+
+But `parse_cli_args` is preferred for the common case — a unified `Config` object with multiple Registry fields at different depths.
+
+**Verified end-to-end:** `tests/test_typed_registry_cli_dispatch.py` (41 tests, including 7 real-subprocess tests).
 
 
 ## CLI flag syntax rules

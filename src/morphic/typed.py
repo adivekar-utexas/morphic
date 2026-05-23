@@ -9,10 +9,12 @@ from typing import (
     Any,
     ClassVar,
     Dict,
+    List,
     NoReturn,
     Optional,
     Set,
     Tuple,
+    Type,
     TypeVar,
     get_args,
     get_origin,
@@ -20,10 +22,10 @@ from typing import (
 
 from pydantic import (
     BaseModel,
-    ConfigDict,
     PrivateAttr,
     TypeAdapter,
     ValidationError,
+    create_model,
     model_validator,
     validate_call,
 )
@@ -70,6 +72,181 @@ def _Typed_pformat(data: Any) -> str:
 
 
 T = TypeVar("T", bound="Typed")
+
+
+## Sentinel key used to dispatch a `Typed + Registry` abstract base to its
+## correct concrete subclass at construction time. When you write
+## ``Backend(__type__="http", name="x", url="...")`` on an abstract base,
+## morphic pops ``__type__`` from kwargs and routes to ``Backend.of("http",
+## ...)``. The same sentinel can appear inside dict inputs to nested fields,
+## e.g. ``Config(backend={"__type__": "http", "name": "x", ...})``, and on the
+## CLI as ``--backend.__type__ http``.
+##
+## We picked a dunder name on purpose: dunders are filtered out of Pydantic's
+## field discovery (only ``__pydantic_*`` is reserved by Pydantic itself), so
+## ``__type__`` cannot accidentally collide with a user-defined field. The
+## sentinel is popped before Pydantic sees the data.
+TYPED_REGISTRY_DISCRIMINATOR_KEY: str = "__type__"
+
+
+def _scan_argv_for_type_flags(argv: List[str]) -> Dict[Tuple[str, ...], str]:
+    """Find every ``--<path>.__type__ <key>`` flag in argv.
+
+    Returns a mapping ``{path_tuple: registry_key}``. The empty tuple ``()``
+    indicates a root-level discriminator (``--__type__ <key>``).
+
+    Both space-separated (``--foo.__type__ http``) and equals-separated
+    (``--foo.__type__=http``) forms are handled. The flags are NOT removed
+    from ``argv``; callers should use :func:`_strip_type_flags` for that.
+    """
+    suffix = f".{TYPED_REGISTRY_DISCRIMINATOR_KEY}"
+    root_flag = f"--{TYPED_REGISTRY_DISCRIMINATOR_KEY}"
+    out: Dict[Tuple[str, ...], str] = {}
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        # `--<path>.__type__ <value>` form (separate tokens):
+        if tok.startswith("--") and tok.endswith(suffix):
+            path_str = tok[2 : -len(suffix)]
+            if i + 1 >= len(argv):
+                raise ValueError(f"CLI flag {tok!r} has no value")
+            out[tuple(path_str.split("."))] = argv[i + 1]
+            i += 2
+            continue
+        # `--<path>.__type__=<value>` form (single token):
+        if tok.startswith("--") and f"{suffix}=" in tok:
+            head, value = tok.split(f"{suffix}=", 1)
+            out[tuple(head[2:].split("."))] = value
+            i += 1
+            continue
+        # Root-level `--__type__ <value>`:
+        if tok == root_flag:
+            if i + 1 >= len(argv):
+                raise ValueError(f"CLI flag {tok!r} has no value")
+            out[()] = argv[i + 1]
+            i += 2
+            continue
+        # Root-level `--__type__=<value>`:
+        if tok.startswith(f"{root_flag}="):
+            out[()] = tok[len(root_flag) + 1 :]
+            i += 1
+            continue
+        i += 1
+    return out
+
+
+def _strip_type_flags(argv: List[str]) -> List[str]:
+    """Return a copy of ``argv`` with every ``__type__`` discriminator
+    flag removed (both space- and equals-separated forms).
+    """
+    suffix = f".{TYPED_REGISTRY_DISCRIMINATOR_KEY}"
+    root_flag = f"--{TYPED_REGISTRY_DISCRIMINATOR_KEY}"
+    out: List[str] = []
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok.startswith("--") and (tok.endswith(suffix) or tok == root_flag):
+            i += 2  # skip flag and value
+            continue
+        if tok.startswith("--") and (f"{suffix}=" in tok or tok.startswith(f"{root_flag}=")):
+            i += 1  # skip single token
+            continue
+        out.append(tok)
+        i += 1
+    return out
+
+
+def _make_unregistered_subclass(cls: Type[BaseModel]) -> Type[BaseModel]:
+    """Create a transient subclass of ``cls`` that skips Registry registration.
+
+    Used by :func:`_resolve_concrete_typed_class` to dynamically rebuild a
+    Registry-typed model without polluting the class's registry with a
+    "second copy under the same key" entry. The trick is to set
+    ``_dont_register: ClassVar[bool] = True`` in the new class's namespace
+    BEFORE ``__init_subclass__`` runs (the metaclass reads it during
+    registration). The ``ClassVar`` annotation is essential — without it,
+    Pydantic treats ``_dont_register = True`` as a private-attribute field
+    rather than a class-level value and Registry's ``__init_subclass__``
+    misses the override.
+    """
+    return type(
+        f"{cls.__name__}__noreg",
+        (cls,),
+        {
+            "__annotations__": {"_dont_register": ClassVar[bool]},
+            "_dont_register": True,
+            ## Allow instantiation even if the parent has unimplemented abstract methods
+            ## that come from `ABC` (the base of the Registry hierarchy uses `ABC` as a
+            ## bases marker). We aren't actually adding any new abstract methods.
+            "__abstractmethods__": frozenset(),
+        },
+    )
+
+
+def _resolve_concrete_typed_class(
+    cls: Type[BaseModel],
+    type_map: Dict[Tuple[str, ...], str],
+    path_prefix: Tuple[str, ...] = (),
+) -> Type[BaseModel]:
+    """Dynamically rebuild ``cls`` with abstract Registry fields replaced by
+    their resolved concrete subclasses.
+
+    Walks ``cls.model_fields``, and for each field whose annotation is a
+    ``Typed + Registry`` abstract base AND whose path is in ``type_map``,
+    looks up the concrete subclass via ``annotation.get_subclass(type_map[
+    field_path])`` and substitutes it. Recurses into both the substituted
+    subclass (which may itself have Registry fields) and any
+    already-concrete nested ``Typed`` field (which may have nested Registry
+    fields).
+
+    If no rebuilds are needed for ``cls`` or any of its descendants, returns
+    ``cls`` unchanged. Otherwise returns a new dynamically generated
+    subclass via ``pydantic.create_model``, marked ``_dont_register=True``
+    so it does not pollute Registry hierarchies.
+    """
+    new_fields: Dict[str, Any] = {}
+    needs_rebuild = False
+
+    for field_name, field_info in cls.model_fields.items():
+        field_path = path_prefix + (field_name,)
+        ann = field_info.annotation
+        is_registry_base = (
+            isinstance(ann, type)
+            and issubclass(ann, Registry)
+            and any(b is __import__("abc").ABC for b in ann.__bases__)
+        )
+        if is_registry_base and field_path in type_map:
+            sub_cls = ann.get_subclass(type_map[field_path])
+            resolved_sub = _resolve_concrete_typed_class(sub_cls, type_map, field_path)
+            new_fields[field_name] = (resolved_sub, field_info)
+            needs_rebuild = True
+        elif isinstance(ann, type) and issubclass(ann, BaseModel):
+            ## Concrete nested Typed — recurse to look for nested Registry
+            ## fields; substitute only if any descendant changed.
+            resolved_sub = _resolve_concrete_typed_class(ann, type_map, field_path)
+            if resolved_sub is not ann:
+                new_fields[field_name] = (resolved_sub, field_info)
+                needs_rebuild = True
+            else:
+                new_fields[field_name] = (ann, field_info)
+        else:
+            new_fields[field_name] = (ann, field_info)
+
+    if not needs_rebuild:
+        return cls
+
+    if issubclass(cls, Registry):
+        intermediate = _make_unregistered_subclass(cls)
+        return create_model(
+            f"{cls.__name__}__resolved",
+            __base__=intermediate,
+            **new_fields,
+        )
+    return create_model(
+        f"{cls.__name__}__resolved",
+        __base__=cls,
+        **new_fields,
+    )
 
 
 class Typed(BaseSettings, ABC):
@@ -386,6 +563,40 @@ class Typed(BaseSettings, ABC):
     _typed_post_initialized: bool = PrivateAttr(default=False)
 
     @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        """Strip implementation-detail underscore attributes from ``__private_attributes__``.
+
+        Background: Pydantic's metaclass (``ModelMetaclass.__new__``) walks the
+        class namespace dict and registers every ``_foo`` name as a
+        ``PrivateAttr`` (see ``inspect_namespace`` in
+        ``pydantic/_internal/_model_construction.py``). When other libraries
+        compose a Typed subclass via ``type(name, bases, dict(parent.__dict__))``
+        — concurry's ``Worker`` composition wrapper does this, see
+        ``concurry/core/worker/base_worker.py`` line 3178 — Python's ABC
+        machinery has already populated ``parent.__dict__["_abc_impl"]`` with an
+        ``_abc._abc_data`` instance. That instance gets copied into the new
+        class's namespace, Pydantic sees it as a private attribute, registers
+        it, and later ``init_private_attributes`` ``deepcopy``s its default —
+        which fails because ``_abc._abc_data`` is unpicklable.
+
+        Before this Typed change, the condition that triggers
+        ``init_private_attributes`` (``if private_attributes or
+        base_private_attributes`` in ``ModelMetaclass.__new__``) was never True
+        for these composed Worker subclasses, so the deepcopy never ran. Adding
+        the ``_typed_post_initialized`` PrivateAttr to Typed turned that
+        condition on — exposing the latent bug.
+
+        We strip these implementation-detail names here. They are class-level
+        Python machinery, not user-defined PrivateAttrs, and a Typed subclass
+        should never be expected to support them.
+        """
+        super().__pydantic_init_subclass__(**kwargs)
+        ## Names introduced by Python ABC machinery that Pydantic mistakes for
+        ## PrivateAttrs in composed-class scenarios.
+        for spurious in ("_abc_impl",):
+            cls.__private_attributes__.pop(spurious, None)
+
+    @classmethod
     def settings_customise_sources(
         cls,
         settings_cls: type,
@@ -427,6 +638,74 @@ class Typed(BaseSettings, ABC):
         on top of whatever sources this method returns.
         """
         return (init_settings,)
+
+    def __new__(cls, **data: Any) -> "Typed":
+        """
+        Dispatch ``Typed + Registry`` abstract base construction to the
+        correct concrete subclass when ``__type__`` is provided in kwargs.
+
+        When a user writes::
+
+            class Backend(Typed, Registry, ABC):
+                name: str
+
+            class HttpBackend(Backend):
+                aliases = ("http",)
+                url: str = "default"
+
+            b = Backend(__type__="http", name="x", url="http://api")
+
+        ``__new__`` detects that ``cls`` is the abstract Registry base
+        (``ABC in cls.__bases__ and Registry in cls.__mro__``), pops
+        ``__type__`` from ``data``, and constructs the concrete
+        ``HttpBackend`` directly. This is equivalent to calling
+        ``Backend.of("http", name="x", url="http://api")``.
+
+        After ``__new__`` returns the dispatched instance, Python's
+        construction protocol calls ``cls.__init__(instance, **original_data)``
+        on the original class (``Backend``), passing the original kwargs
+        (which still include ``__type__``, ``name``, ``url`` — even though
+        ``url`` is not a Backend field). To prevent this from re-running
+        Pydantic validation with the wrong field set, we mark the
+        dispatched instance with ``_morphic_dispatched=True`` and the
+        ``__init__`` method short-circuits when it sees that flag.
+
+        Direct construction of a concrete subclass with ``__type__`` is
+        also supported (the discriminator is silently popped if the key
+        in argv matches, and rejected if it does not match the concrete
+        class — via Pydantic ``extra_forbidden`` after the value is
+        already-popped fails to land anywhere); this matches what
+        ``Backend.of("http", ...)`` does today.
+        """
+        # Short-circuit fast: if `__type__` isn't in data, we have nothing
+        # to dispatch and can let Pydantic do its normal thing.
+        if TYPED_REGISTRY_DISCRIMINATOR_KEY not in data:
+            return super().__new__(cls)
+
+        # We only redirect from an abstract Registry BASE class. Concrete
+        # subclasses that happen to receive `__type__` should silently
+        # accept it (popping in __init__) iff the value matches their key,
+        # else error. We don't redirect away from a concrete class.
+        is_registry_base = (
+            Registry in cls.__mro__
+            and cls.__bases__
+            and any(b is __import__("abc").ABC for b in cls.__bases__)
+        )
+        if not is_registry_base:
+            return super().__new__(cls)
+
+        sub_key = data.pop(TYPED_REGISTRY_DISCRIMINATOR_KEY)
+        # `cls.get_subclass` raises a clear KeyError if the key is unknown.
+        sub_cls = cls.get_subclass(sub_key)
+
+        # Construct the concrete subclass eagerly. This runs the full
+        # Pydantic validation pipeline including the per-instance marker
+        # for `post_initialize`. The resulting instance is fully ready;
+        # we just need to mark it so the post-`__new__` `__init__` call
+        # on `cls` becomes a no-op.
+        inst = sub_cls(**data)
+        object.__setattr__(inst, "_morphic_dispatched", True)
+        return inst
 
     def __init__(self, /, **data: Dict[str, Any]):
         """
@@ -500,6 +779,32 @@ class Typed(BaseSettings, ABC):
             enhanced formatting. The original Pydantic behavior is preserved while
             providing more user-friendly error messages.
         """
+        ## Short-circuit for instances that were constructed via __new__'s
+        ## __type__ dispatch path: __new__ already returned a fully validated
+        ## instance of the concrete subclass, but Python's automatic
+        ## post-__new__ __init__ call still runs on the abstract base's
+        ## __init__ with the original kwargs. Without this guard, those
+        ## kwargs (which may include subclass-specific fields the abstract
+        ## base does not know about) would re-trigger Pydantic validation
+        ## and fail with `extra_forbidden` errors.
+        ##
+        ## We use `getattr(self, ..., False)` to avoid triggering custom
+        ## `__getattr__` overrides on Typed subclasses (e.g., concurry's
+        ## worker proxies, which raise AttributeError for unknown private
+        ## attribute lookups via their dispatch machinery).
+        if getattr(self, "_morphic_dispatched", False):
+            object.__setattr__(self, "_morphic_dispatched", False)
+            return
+
+        ## Discriminator handling for direct construction. If the user calls
+        ## `HttpBackend(__type__="http", ...)` directly (not via the abstract
+        ## base), `__type__` is silently popped here. If the user passes a
+        ## value that does not match the concrete class's registry keys we
+        ## let Pydantic raise the standard `extra_forbidden` later — the
+        ## sentinel is only popped on the no-op path.
+        if TYPED_REGISTRY_DISCRIMINATOR_KEY in data:
+            data.pop(TYPED_REGISTRY_DISCRIMINATOR_KEY)
+
         try:
             super().__init__(**data)
         except ValidationError as e:
@@ -547,6 +852,123 @@ class Typed(BaseSettings, ABC):
                 f"\nInputs to '{self.class_name}' constructor are {tuple(data.keys())}:"
                 f"\n{_Typed_pformat(data)}"
             )
+
+    @classmethod
+    def parse_cli_args(
+        cls: Type[T],
+        argv: Optional[List[str]] = None,
+        **kwargs: Any,
+    ) -> T:
+        """
+        Parse command-line arguments into a fully validated instance of ``cls``.
+
+        This is the recommended entrypoint for CLI scripts that use ``Typed``
+        as their root config model. It does the work that
+        ``cls(_cli_parse_args=...)`` does, *plus* it handles ``__type__``
+        discriminator dispatch for ``Typed + Registry`` fields at any depth.
+
+        Two-pass dispatch
+        -----------------
+        ``parse_cli_args`` first scans ``argv`` for ``--<path>.__type__ <key>``
+        flags, recording which Registry-typed field at which depth should be
+        resolved to which concrete subclass. It then dynamically rebuilds
+        ``cls`` with each abstract Registry field replaced by its resolved
+        concrete subclass, and hands the rebuilt class to pydantic-settings'
+        normal CLI source. The result is that subclass-specific fields like
+        ``--backend.url`` (for ``HttpBackend``) become valid CLI flags.
+
+        Args:
+            argv: Argument list. Defaults to ``sys.argv[1:]``.
+            **kwargs: Forwarded to ``cls.__init__``. Useful for passing
+                source overrides like ``_env_file``, ``_secrets_dir``, etc.
+
+        Returns:
+            A fully validated instance of ``cls`` (or, when ``cls`` is itself
+            an abstract Registry base and ``--__type__ <key>`` is provided in
+            argv, an instance of the resolved concrete subclass).
+
+        Examples:
+            Pure ``Typed`` root (no Registry fields):
+
+            .. code-block:: python
+
+                class App(Typed):
+                    seed: int = 42
+                    name: str = "default"
+
+                # In script.py:
+                app = App.parse_cli_args()
+
+            ``Typed + Registry`` field with discriminator dispatch:
+
+            .. code-block:: python
+
+                class Backend(Typed, Registry, ABC):
+                    name: str
+
+                class HttpBackend(Backend):
+                    aliases = ("http",)
+                    url: str = "http://localhost"
+
+                class Config(Typed):
+                    backend: Backend
+                    seed: int = 42
+
+                # CLI: python script.py --backend.__type__ http \\
+                #                       --backend.name api \\
+                #                       --backend.url http://prod
+                config = Config.parse_cli_args()
+                assert isinstance(config.backend, HttpBackend)
+                assert config.backend.url == "http://prod"
+
+            Multiple Registry hierarchies at different depths:
+
+            .. code-block:: python
+
+                class Auth(Typed, Registry, ABC):
+                    pass
+
+                class BasicAuth(Auth):
+                    aliases = ("basic",)
+                    username: str = ""
+                    password: str = ""
+
+                class HttpBackend(Backend):
+                    aliases = ("http",)
+                    url: str = "http://localhost"
+                    auth: Auth = BasicAuth()  # default subclass
+
+                # CLI: --backend.__type__ http
+                #      --backend.auth.__type__ basic
+                #      --backend.auth.username alice
+                config = Config.parse_cli_args()
+                assert isinstance(config.backend.auth, BasicAuth)
+
+        See Also:
+            - :meth:`Typed.__new__`: Direct ``__type__`` dispatch when
+              constructing a ``Typed + Registry`` abstract base via kwargs.
+            - :data:`TYPED_REGISTRY_DISCRIMINATOR_KEY`: The sentinel name.
+        """
+        import sys
+
+        if argv is None:
+            argv = list(sys.argv[1:])
+        else:
+            argv = list(argv)
+
+        type_map = _scan_argv_for_type_flags(argv)
+        clean_argv = _strip_type_flags(argv)
+
+        # Root-level dispatch: cls itself is an abstract Registry base.
+        target_cls: Type[T] = cls
+        if () in type_map:
+            target_cls = target_cls.get_subclass(type_map.pop(()))
+
+        # Resolve every abstract Registry field at any depth to its concrete
+        # subclass, dynamically rebuilding the class hierarchy if needed.
+        concrete_cls = _resolve_concrete_typed_class(target_cls, type_map)
+
+        return concrete_cls(_cli_parse_args=clean_argv, **kwargs)
 
     @classmethod
     def of(cls, registry_key: Optional[Any] = None, /, **data: Dict[str, Any]) -> T:
@@ -1934,7 +2356,13 @@ class Typed(BaseSettings, ABC):
         ## model into GPU memory, opening cloud connections) would run twice on the same
         ## instance — once during the inner construction, again during the outer
         ## construction. The marker makes the second fire a silent no-op.
-        if self._typed_post_initialized:
+        ##
+        ## We use `getattr(self, ..., False)` instead of `self._typed_post_initialized`
+        ## because some Typed subclasses (notably concurry's worker proxies) override
+        ## `__getattr__` to dispatch unknown attribute lookups to a remote object and
+        ## raise `AttributeError` for unknown private attributes. A normal attribute
+        ## access would trigger that `__getattr__`. The defaulted-getattr form is safe.
+        if getattr(self, "_typed_post_initialized", False):
             return self
         self.post_set_validate_inputs()
         ## PrivateAttr assignment works on frozen models via direct attribute access.

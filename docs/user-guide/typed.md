@@ -13,7 +13,8 @@ Typed is built on Pydantic's `BaseSettings` (a `BaseModel` with extra `__init__`
 - **Advanced error handling** - Enhanced error messages with detailed validation information
 - **Hierarchical type support** - Nested Typed objects, lists, and dictionaries with automatic conversion
 - **Identity preservation** - A pre-built Typed passed as a field of an outer Typed is reused, not cloned (`revalidate_instances="never"`)
-- **CLI integration** - Every Typed accepts `_cli_parse_args=...` and supports nested overrides (`--infra.ray-init.address X`)
+- **CLI integration** - Every Typed accepts `_cli_parse_args=...` and supports nested overrides (`--infra.ray-init.address X`); use [`Config.parse_cli_args()`](typed-cli.md#pattern-pure-native-cli) as the recommended entrypoint
+- **Registry CLI dispatch** - Typed + Registry hierarchies support `__type__` discriminator dispatch in kwargs, dict input, and CLI flags (`--backend.__type__ http`); see [Typed CLI guide](typed-cli.md#pattern-registry-dispatch-with-__type__-discriminator)
 - **Source isolation** - Environment variables and dotenv files are NOT read by default, so a field named `user` won't accidentally pick up `$USER`
 - **Idempotent lifecycle hooks** - `post_initialize` and `post_validate` run exactly once per instance, even when Pydantic re-fires `model_validator(mode="after")` on a nested Typed (Pydantic [issue #12876](https://github.com/pydantic/pydantic/issues/12876))
 - **Registry integration** - Works seamlessly with the Registry system

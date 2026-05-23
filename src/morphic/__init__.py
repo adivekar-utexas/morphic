@@ -87,7 +87,13 @@ from .structs import (
     set_intersection,
     set_union,
 )
-from .typed import MutableTyped, Typed, ValidationError, validate
+from .typed import (
+    TYPED_REGISTRY_DISCRIMINATOR_KEY,
+    MutableTyped,
+    Typed,
+    ValidationError,
+    validate,
+)
 
 __all__ = [
     # Core classes
@@ -97,6 +103,7 @@ __all__ = [
     "auto",
     "Typed",
     "MutableTyped",
+    "TYPED_REGISTRY_DISCRIMINATOR_KEY",
     "validate",
     "ValidationError",
     "classproperty",

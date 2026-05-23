@@ -32,19 +32,15 @@ per-class totals AND per-instance counts.
 
 from __future__ import annotations
 
-import json
-import os
 import subprocess
 import sys
-import textwrap
 from collections import Counter
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import pytest
-from pydantic import Field, PrivateAttr, ValidationError
+from pydantic import PrivateAttr, ValidationError
 
-from morphic import AutoEnum, Registry, Typed, auto
-
+from morphic import AutoEnum, Typed, auto
 
 # ---------------------------------------------------------------------------
 # Subprocess helper (same pattern as test_typed_basesettings.py).

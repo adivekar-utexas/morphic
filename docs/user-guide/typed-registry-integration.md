@@ -378,20 +378,27 @@ for i in range(100):
 
 ## CLI / BaseSettings with Registry
 
-Because every Typed inherits from `pydantic_settings.BaseSettings`, every concrete `Registry` subclass automatically supports `_cli_parse_args=...` and nested CLI overrides. The Registry factory (`Animal.of("Dog", ...)`) and the BaseSettings CLI source live on different axes:
+Because every Typed inherits from `pydantic_settings.BaseSettings`, every concrete `Registry` subclass automatically supports `_cli_parse_args=...` and nested CLI overrides. There are three composable axes:
 
-- **`Animal.of("key", **kwargs)`** dispatches to the right concrete subclass based on the registry key.
-- **`HttpBackend(_cli_parse_args=[...])`** parses argv into a specific concrete subclass.
+- **`Animal.of("key", **kwargs)`** — Registry factory: dispatch to the right concrete subclass based on the registry key, with kwargs.
+- **`Animal(__type__="key", **kwargs)`** — Direct construction with discriminator: equivalent to `Animal.of(...)`, also works inside dict inputs (`Container(animal={"__type__": "key", ...})`).
+- **`Config.parse_cli_args(argv)`** — CLI-driven dispatch: scans argv for `--<path>.__type__ <key>` flags at any depth, dynamically rebuilds the schema with resolved concrete subclasses, then runs pydantic-settings' CLI source on the rebuilt schema. Subclass-specific fields like `--backend.url` (for `HttpBackend`) become valid CLI flags.
 
-These compose naturally:
+### CLI dispatch for nested Registry fields
+
+The most common use case: a `Config` object that embeds a `Backend: Backend` (abstract Registry) field, and you want to pick the concrete backend AND override its specific fields on the CLI.
 
 ```python
 from abc import ABC
 from morphic import Typed, Registry
 
-class Auth(Typed):
-    scheme: str = "bearer"
-    token: str = ""
+class Auth(Typed, Registry, ABC):
+    pass
+
+class BasicAuth(Auth):
+    aliases = ("basic",)
+    username: str = ""
+    password: str = ""
 
 class Backend(Typed, Registry, ABC):
     name: str
@@ -399,20 +406,68 @@ class Backend(Typed, Registry, ABC):
 class HttpBackend(Backend):
     aliases = ("http",)
     url: str = "http://localhost"
-    auth: Auth = Auth()
+    auth: Auth = BasicAuth()
 
-# Resolve concrete class via Registry, then build via CLI:
-backend_cls = Backend.get_subclass("http")
-backend = backend_cls(_cli_parse_args=[
-    "--name", "primary",
-    "--auth.scheme", "basic",
-    "--auth.token", "secret-xyz",
-])
-assert isinstance(backend, HttpBackend)
-assert backend.auth.scheme == "basic"
+class GrpcBackend(Backend):
+    aliases = ("grpc",)
+    target: str = "localhost:50051"
+
+class Config(Typed):
+    backend: Backend
+    seed: int = 42
 ```
 
-Identity is also preserved when a Registry factory receives a pre-built nested Typed:
+```bash
+# Pick HttpBackend; override its url and the nested auth's password:
+python script.py \
+    --backend.__type__ http \
+    --backend.name primary \
+    --backend.url http://api \
+    --backend.auth.__type__ basic \
+    --backend.auth.username alice \
+    --backend.auth.password secret
+
+# Pick GrpcBackend instead:
+python script.py \
+    --backend.__type__ grpc \
+    --backend.name primary \
+    --backend.target prod:50051
+
+# Get help for the resolved schema (HttpBackend's url and BasicAuth's
+# username/password fields show in the help text once the corresponding
+# --*.__type__ flags are present):
+python script.py --backend.__type__ http --backend.auth.__type__ basic --help
+```
+
+In `script.py`:
+```python
+config = Config.parse_cli_args()  # Reads sys.argv[1:]; honors --*.__type__ at any depth.
+```
+
+See the [Typed CLI guide → Pattern: Registry dispatch with `__type__` discriminator](typed-cli.md#pattern-registry-dispatch-with-__type__-discriminator) for the full feature surface, including direct kwargs (`Backend(__type__="http", ...)`) and dict-input dispatch (`Config(backend={"__type__": "http", ...})`).
+
+### Programmatic dispatch (no CLI)
+
+For non-CLI code paths (notebooks, library code, tests), the same discriminator works in three equivalent ways:
+
+```python
+# 1. Direct kwargs on the abstract base (Typed.__new__ redirects to .of()):
+backend = Backend(__type__="http", name="x", url="http://api")
+
+# 2. Identical via Registry factory:
+backend = Backend.of("http", name="x", url="http://api")
+
+# 3. Dict input through an outer Typed (the discriminator inside the dict
+#    is honored when morphic coerces it to a Backend instance):
+config = Config(backend={
+    "__type__": "http",
+    "name": "x",
+    "url": "http://api",
+    "auth": {"__type__": "basic", "username": "alice"},
+})
+```
+
+Identity is also preserved when a Registry factory or dict-coerce receives a pre-built nested Typed:
 
 ```python
 class Inner(Typed):

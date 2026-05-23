@@ -35,10 +35,9 @@ from abc import ABC
 from typing import List, Optional
 
 import pytest
-from pydantic import Field, PrivateAttr, model_validator
+from pydantic import PrivateAttr
 
 from morphic import Registry, Typed
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1019,3 +1018,310 @@ class TestRealCLIScriptWithJSONConfig:
         # The error should mention validation:
         combined = result.stderr + result.stdout
         assert "ValidationError" in combined or "validation" in combined.lower()
+
+
+# ---------------------------------------------------------------------------
+# Pydantic ABC compatibility (the `_abc_impl` regression suite)
+# ---------------------------------------------------------------------------
+
+
+class TestABCImplStripRegression:
+    """``_abc_impl`` is a CPython ABC implementation detail that ends up in
+    a class's ``__dict__`` whenever ``abc.ABC`` is in the MRO. Pydantic's
+    ``inspect_namespace`` walks the namespace and (correctly per its rules)
+    treats any ``_foo`` name as a ``PrivateAttr``. When a downstream library
+    composes a Typed subclass via ``type(name, bases, dict(parent.__dict__))``
+    — concurry's ``Worker`` composition wrapper does this — ``_abc_impl``
+    gets registered as a private attribute on the new class.
+
+    Subsequently, ``init_private_attributes`` ``deepcopy``s every
+    ``PrivateAttr``'s default. The default of the spurious ``_abc_impl``
+    PrivateAttr is the actual ``_abc._abc_data`` instance, which is
+    unpicklable: ``deepcopy`` raises ``TypeError: cannot pickle '_abc._abc_data'
+    object``.
+
+    Before ``_typed_post_initialized`` was added to ``Typed``, this latent
+    bug never fired in practice, because no PrivateAttrs existed in the
+    chain so Pydantic never registered ``init_private_attributes`` as
+    ``model_post_init``. Adding our marker turned that condition on,
+    exposing the bug. The fix lives in ``Typed.__pydantic_init_subclass__``,
+    which strips ``_abc_impl`` from ``__private_attributes__`` after
+    Pydantic builds the class.
+
+    These tests pin the fix so it cannot silently regress across pydantic
+    or pydantic-settings upgrades.
+    """
+
+    def test_abc_impl_stripped_from_typed_with_abc_base(self) -> None:
+        """A ``Typed + ABC`` subclass does NOT have ``_abc_impl`` in its
+        ``__private_attributes__``."""
+        from abc import ABC
+
+        from morphic import Typed
+
+        class Foo(Typed, ABC):
+            name: str
+
+        assert "_abc_impl" not in Foo.__private_attributes__, (
+            f"_abc_impl was not stripped from Foo's __private_attributes__: "
+            f"{list(Foo.__private_attributes__.keys())}"
+        )
+
+    def test_abc_impl_stripped_from_composed_subclass(self) -> None:
+        """The concurry-style composition pattern produces a class with
+        ``_abc_impl`` in its ``__dict__``. Without our strip, Pydantic would
+        register it as a PrivateAttr. With our strip, it does not."""
+        from abc import ABC
+
+        from morphic import Typed
+
+        class Base(Typed, ABC):
+            name: str
+
+        ## Mirror what concurry's Worker composition wrapper does:
+        ##   target_cls = type(target_cls.__name__, (Worker, target_cls), dict(target_cls.__dict__))
+        Composed = type("Composed", (Base,), dict(Base.__dict__))
+
+        assert "_abc_impl" not in Composed.__private_attributes__, (
+            f"_abc_impl leaked into Composed.__private_attributes__: "
+            f"{list(Composed.__private_attributes__.keys())}"
+        )
+
+    def test_composed_subclass_can_be_instantiated_without_unpicklable_default(self) -> None:
+        """The composed subclass must instantiate successfully — without our
+        strip, ``init_private_attributes`` would call ``deepcopy`` on the
+        ``_abc_data`` default and raise ``TypeError: cannot pickle
+        '_abc._abc_data' object``."""
+        from abc import ABC
+
+        from morphic import Typed
+
+        class Base(Typed, ABC):
+            name: str
+
+        Composed = type("Composed", (Base,), dict(Base.__dict__))
+
+        ## This is the canary: the unfixed code raises with
+        ## "cannot pickle '_abc._abc_data' object" here.
+        instance = Composed(name="x")
+        assert instance.name == "x"
+        assert isinstance(instance, Base)
+
+    def test_user_defined_underscore_field_unaffected(self) -> None:
+        """The strip is targeted at known implementation-detail names. A
+        user-defined ``PrivateAttr`` with any other underscore-prefixed name
+        is preserved."""
+        from morphic import Typed
+
+        class WithPrivate(Typed):
+            name: str
+            _custom_state: dict = PrivateAttr(default_factory=dict)
+
+        assert "_custom_state" in WithPrivate.__private_attributes__
+        assert "_typed_post_initialized" in WithPrivate.__private_attributes__
+
+        ## And the instance can read/write the custom private attr:
+        w = WithPrivate(name="x")
+        w._custom_state["key"] = "value"
+        assert w._custom_state == {"key": "value"}
+
+    def test_all_typed_subclasses_share_only_typed_post_initialized(self) -> None:
+        """Confirm that bare ``Typed`` and ``Typed + ABC`` subclasses have
+        a single inherited PrivateAttr: ``_typed_post_initialized``. If a
+        new Pydantic version introduces a different implementation-detail
+        name in this dict, this test will fail and prompt us to update the
+        strip list in ``Typed.__pydantic_init_subclass__``."""
+        from abc import ABC
+
+        from morphic import Typed
+
+        class PlainTyped(Typed):
+            name: str
+
+        class AbstractTyped(Typed, ABC):
+            name: str
+
+        Composed = type("Composed", (AbstractTyped,), dict(AbstractTyped.__dict__))
+
+        ## Each of these classes should have EXACTLY one inherited
+        ## PrivateAttr — the one Typed itself defines. If any other
+        ## name shows up, pydantic has changed its behavior or a new
+        ## CPython implementation detail leaked through and we need
+        ## to update Typed.__pydantic_init_subclass__.
+        for cls in (PlainTyped, AbstractTyped, Composed):
+            keys = set(cls.__private_attributes__.keys())
+            assert keys == {"_typed_post_initialized"}, (
+                f"{cls.__name__}.__private_attributes__ = {keys!r}; "
+                f"expected just _typed_post_initialized. If this fails, a "
+                f"new implementation-detail PrivateAttr leaked through and "
+                f"the strip list in Typed.__pydantic_init_subclass__ may "
+                f"need updating."
+            )
+
+
+# ---------------------------------------------------------------------------
+# `model_config = ConfigDict(...)` subclass compatibility
+# ---------------------------------------------------------------------------
+
+
+class TestConfigDictSubclassCompatibility:
+    """Subclasses that override ``model_config`` with ``ConfigDict(...)``
+    (instead of ``SettingsConfigDict(...)``) must keep working.
+
+    Background: Typed's base ``model_config`` is a ``SettingsConfigDict``.
+    Plenty of existing user code declares
+    ``model_config = ConfigDict(extra='allow')`` (or similar) on Typed
+    subclasses. Pydantic merges ``model_config`` across the MRO so the
+    subclass's keys override only what they specify; everything else
+    (``frozen``, ``revalidate_instances``, ``cli_parse_args``,
+    ``cli_kebab_case``, etc.) is inherited from the base.
+
+    We pin this contract here so future Typed changes don't accidentally
+    break user code that uses ``ConfigDict``.
+    """
+
+    def test_subclass_with_config_dict_inherits_typed_defaults(self) -> None:
+        from pydantic import ConfigDict
+
+        class Sub(Typed):
+            model_config = ConfigDict(extra="allow")
+            name: str
+
+        ## The user-supplied override applies:
+        assert Sub.model_config["extra"] == "allow"
+        ## All Typed defaults are preserved via the merge:
+        assert Sub.model_config["frozen"] is True
+        assert Sub.model_config["revalidate_instances"] == "never"
+        assert Sub.model_config["validate_default"] is True
+        assert Sub.model_config["arbitrary_types_allowed"] is True
+        assert Sub.model_config["cli_kebab_case"] is True
+        assert Sub.model_config["cli_implicit_flags"] is True
+        ## And the source-isolation override is still in place
+        ## (cli_parse_args remains unset / None so CLI is opt-in):
+        assert Sub.model_config.get("cli_parse_args") in (None, False)
+
+    def test_config_dict_subclass_basic_instantiation(self) -> None:
+        from pydantic import ConfigDict
+
+        class Sub(Typed):
+            model_config = ConfigDict(extra="allow")
+            name: str
+
+        s = Sub(name="x", extra_field="bonus")
+        assert s.name == "x"
+        ## extra="allow" honored:
+        assert s.model_extra == {"extra_field": "bonus"}
+
+    def test_config_dict_subclass_cli_parse(self) -> None:
+        """CLI parsing still works on a ConfigDict-overridden subclass."""
+        from pydantic import ConfigDict
+
+        class Sub(Typed):
+            model_config = ConfigDict(extra="ignore")
+            name: str = "default"
+            count: int = 0
+
+        s = Sub(_cli_parse_args=["--name", "cli", "--count", "42"])
+        assert s.name == "cli"
+        assert s.count == 42
+
+    def test_config_dict_subclass_post_initialize_idempotent(self) -> None:
+        """The framework's ``post_initialize`` idempotency marker still
+        applies even when the subclass uses ``ConfigDict``."""
+        from pydantic import ConfigDict
+
+        calls: List[int] = []
+
+        class Inner(Typed):
+            model_config = ConfigDict(extra="ignore")
+            name: str
+
+            def post_initialize(self) -> None:
+                calls.append(id(self))
+
+        class Outer(Typed):
+            inner: Inner
+
+        i = Inner(name="x")
+        assert len(calls) == 1
+        Outer(inner=i)
+        ## The marker still prevents the second fire:
+        assert len(calls) == 1, f"post_initialize re-fired despite inner using ConfigDict: {calls}"
+
+    def test_config_dict_subclass_identity_preserved(self) -> None:
+        """``revalidate_instances='never'`` is inherited from Typed even when
+        the subclass overrides ``model_config`` with ``ConfigDict``."""
+        from pydantic import ConfigDict
+
+        class Inner(Typed):
+            model_config = ConfigDict(extra="ignore")
+            name: str
+
+        class Outer(Typed):
+            inner: Inner
+
+        i = Inner(name="x")
+        o = Outer(inner=i)
+        assert o.inner is i, (
+            "Identity NOT preserved when inner uses ConfigDict — revalidate_instances inheritance is broken."
+        )
+
+    def test_config_dict_subclass_with_registry_dispatch(self) -> None:
+        """``__type__`` discriminator dispatch works on a ``Typed + Registry +
+        ABC`` hierarchy where the abstract base uses ``ConfigDict``."""
+        from abc import ABC
+
+        from pydantic import ConfigDict
+
+        from morphic import Registry
+
+        class Base(Typed, Registry, ABC):
+            model_config = ConfigDict(extra="allow")
+            name: str
+
+        class Sub1(Base):
+            aliases = ("first",)
+            field1: str = "default1"
+
+        class Sub2(Base):
+            aliases = ("second",)
+            field2: str = "default2"
+
+        b = Base(__type__="first", name="x", field1="patched", random_extra="ok")
+        assert type(b) is Sub1
+        assert b.field1 == "patched"
+        ## And extras allowed because the base's ConfigDict said so:
+        assert b.model_extra == {"random_extra": "ok"}
+
+    def test_config_dict_subclass_revalidate_instances_override(self) -> None:
+        """A subclass CAN override ``revalidate_instances`` if it really wants
+        to — the merge respects the subclass's value."""
+        from pydantic import ConfigDict
+
+        class Override(Typed):
+            ## Explicitly turn off identity preservation on this subclass.
+            model_config = ConfigDict(revalidate_instances="always")
+            name: str
+
+        ## The subclass override wins:
+        assert Override.model_config["revalidate_instances"] == "always"
+        ## Other Typed defaults still inherited:
+        assert Override.model_config["frozen"] is True
+
+    def test_mutable_typed_subclass_with_config_dict(self) -> None:
+        """Same compatibility for ``MutableTyped`` subclasses (frozen=False).
+        ``MutableTyped`` itself uses ``SettingsConfigDict`` internally, but
+        a subclass can override with ``ConfigDict``."""
+        from pydantic import ConfigDict
+
+        from morphic import MutableTyped
+
+        class Mut(MutableTyped):
+            model_config = ConfigDict(extra="allow")
+            name: str
+
+        m = Mut(name="x")
+        ## frozen=False inherited from MutableTyped:
+        assert Mut.model_config["frozen"] is False
+        m.name = "patched"  # would raise if accidentally frozen
+        assert m.name == "patched"
