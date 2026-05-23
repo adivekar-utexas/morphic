@@ -1,10 +1,10 @@
 # Typed
 
-Typed provides enhanced data modeling capabilities with automatic validation, type conversion, default value processing, and seamless integration with Morphic's Registry and AutoEnum systems. Built on Pydantic 2+, Typed leverages Pydantic's powerful validation engine while providing additional morphic-specific functionality.
+Typed provides enhanced data modeling capabilities with automatic validation, type conversion, default value processing, CLI / environment-variable loading, and seamless integration with Morphic's Registry and AutoEnum systems. Built on `pydantic-settings` 2+ (which itself extends Pydantic 2+), Typed leverages Pydantic's powerful validation engine while providing additional morphic-specific functionality.
 
 ## Overview
 
-Typed is built on Pydantic's BaseModel and provides a robust foundation for data modeling with enhanced features including:
+Typed is built on Pydantic's `BaseSettings` (a `BaseModel` with extra `__init__` machinery for source loading) and provides a robust foundation for data modeling with enhanced features including:
 
 - **Pydantic-powered validation** - Built on Pydantic 2+ for robust type validation and conversion
 - **Immutable by default** - Models are frozen by default to prevent accidental modification
@@ -12,6 +12,10 @@ Typed is built on Pydantic's BaseModel and provides a robust foundation for data
 - **Arbitrary types support** - Can handle complex custom types through Pydantic's arbitrary_types_allowed
 - **Advanced error handling** - Enhanced error messages with detailed validation information
 - **Hierarchical type support** - Nested Typed objects, lists, and dictionaries with automatic conversion
+- **Identity preservation** - A pre-built Typed passed as a field of an outer Typed is reused, not cloned (`revalidate_instances="never"`)
+- **CLI integration** - Every Typed accepts `_cli_parse_args=...` and supports nested overrides (`--infra.ray-init.address X`)
+- **Source isolation** - Environment variables and dotenv files are NOT read by default, so a field named `user` won't accidentally pick up `$USER`
+- **Idempotent lifecycle hooks** - `post_initialize` and `post_validate` run exactly once per instance, even when Pydantic re-fires `model_validator(mode="after")` on a nested Typed (Pydantic [issue #12876](https://github.com/pydantic/pydantic/issues/12876))
 - **Registry integration** - Works seamlessly with the Registry system
 - **AutoEnum support** - Automatic enum conversion with fuzzy matching
 
@@ -144,6 +148,10 @@ Typed leverages Pydantic's powerful configuration system to provide robust data 
 - `frozen=True` - Models are immutable by default
 - `validate_default=True` - Default values are validated
 - `arbitrary_types_allowed=True` - Custom types are supported
+- `revalidate_instances="never"` - Pre-built Typed instances passed as field values are REUSED, not cloned. See [Identity Preservation](#identity-preservation-and-pre-built-instances) below.
+- `cli_kebab_case=True` - CLI flags use kebab-case (`--ray-init` instead of `--ray_init`)
+- `cli_implicit_flags=True` - Boolean fields auto-generate `--flag` / `--no-flag` pairs
+- `cli_parse_args=False` - Argv is not read automatically; pass `_cli_parse_args=True` or `_cli_parse_args=[...]` to opt in
 
 ### MutableTyped Configuration
 
@@ -152,6 +160,161 @@ MutableTyped uses the same configuration as Typed with key differences:
 - `frozen=False` - Models can be modified after instantiation
 - `validate_assignment=False` - No validation on assignment by default (for performance)
 - `validate_private_assignment=False` - Private attribute validation also disabled by default
+
+## BaseSettings Integration: CLI and Environment Variables
+
+Every Typed subclass inherits from `pydantic_settings.BaseSettings`, which is itself a `BaseModel` with extra `__init__` machinery for loading values from external sources (CLI argv, environment variables, dotenv files, secret-file directories). When you construct a Typed instance with plain kwargs, the BaseSettings machinery is a no-op — the kwargs flow straight through to validation. When you opt in by passing `_cli_parse_args=...` (or `_env_file=...`, `_secrets_dir=...`, etc.), the corresponding source kicks in.
+
+### Why BaseSettings instead of plain BaseModel?
+
+Inheriting from `BaseSettings` gives every Typed subclass first-class CLI support out of the box. You no longer need a custom argparse wrapper, a hand-rolled deep-merge of CLI flags into a JSON file, or a separate `Settings` class for the CLI entrypoint. A single Typed model is both your data schema and your CLI/env entrypoint.
+
+### CLI Parsing: Inline Construction
+
+```python
+from morphic import Typed
+
+class App(Typed):
+    name: str = "default"
+    seed: int = 42
+    enabled: bool = False
+
+# Pass argv as a list:
+app = App(_cli_parse_args=["--name", "production", "--seed", "7", "--enabled"])
+assert app.name == "production"
+assert app.seed == 7
+assert app.enabled is True
+
+# Or read from sys.argv:
+app = App(_cli_parse_args=True)
+```
+
+### CLI Parsing: Nested Models
+
+When a Typed has a nested Typed field, every leaf field of the nested model is exposed as a CLI flag using dot notation:
+
+```python
+from morphic import Typed
+
+class RayInit(Typed):
+    address: str = "auto"
+    num_cpus: int = 4
+
+class Infra(Typed):
+    mode: str = "thread"
+    ray_init: RayInit = RayInit()
+
+class App(Typed):
+    infra: Infra = Infra()
+    seed: int = 42
+
+# Deep nested override - the trojanshot use case:
+app = App(_cli_parse_args=["--infra.ray-init.address", "ray://1.2.3.4:10001"])
+assert app.infra.ray_init.address == "ray://1.2.3.4:10001"
+assert app.infra.ray_init.num_cpus == 4   # untouched default
+assert app.infra.mode == "thread"          # untouched default
+
+# Inline JSON for the whole nested structure:
+app = App(_cli_parse_args=["--infra", '{"mode":"ray","ray_init":{"address":"ray://x:1"}}'])
+assert app.infra.mode == "ray"
+assert app.infra.ray_init.address == "ray://x:1"
+
+# Inline JSON + deep override on the same path - inline JSON sets the
+# baseline, deep flags patch specific leaves:
+app = App(_cli_parse_args=[
+    "--infra", '{"mode":"ray","ray_init":{"address":"ray://orig:1","num_cpus":8}}',
+    "--infra.ray-init.address", "ray://override:1",
+])
+assert app.infra.mode == "ray"
+assert app.infra.ray_init.address == "ray://override:1"
+assert app.infra.ray_init.num_cpus == 8
+```
+
+CLI flag names follow `cli_kebab_case=True` (the Typed default), so `ray_init` becomes `--ray-init` on the command line. Field names with underscores stay snake_case in Python.
+
+### Environment Variables and Dotenv Files (Opt-In)
+
+By default, Typed does **NOT** read environment variables, dotenv files, or secret-file directories. This is critical: without this default, a field named `user` would silently pick up `$USER` from the shell, fields named `path`, `home`, `shell` would clash with their identically-named env vars, and a confusing `SettingsError` would result.
+
+To opt into env-var loading on a specific subclass, override `settings_customise_sources`:
+
+```python
+from morphic import Typed
+from pydantic_settings import SettingsConfigDict
+
+class AppSettings(Typed):
+    model_config = SettingsConfigDict(
+        # Required Typed defaults still apply (extra="forbid", frozen=True, ...).
+        # Add the env_prefix to scope env vars to this app.
+        env_prefix="MYAPP_",
+        cli_parse_args=False,
+    )
+
+    name: str = "default"
+    api_key: str = ""
+
+    @classmethod
+    def settings_customise_sources(
+        cls, settings_cls, init_settings, env_settings, dotenv_settings, file_secret_settings,
+    ):
+        # Re-enable env vars (with the MYAPP_ prefix above):
+        return init_settings, env_settings, dotenv_settings, file_secret_settings
+
+# With MYAPP_NAME=production in the environment:
+app = AppSettings()
+assert app.name == "production"  # picked up from MYAPP_NAME
+```
+
+CLI parsing is independent of `settings_customise_sources` — it is enabled by passing `_cli_parse_args=...` to the constructor and adds to whatever sources `settings_customise_sources` returns.
+
+## Identity Preservation and Pre-Built Instances
+
+Typed sets `revalidate_instances="never"` by default. This means: when you pass a pre-built Typed as the value of a field of an outer Typed, the same instance is reused. Mutable state held in `PrivateAttr`s is preserved.
+
+```python
+from morphic import Typed
+from pydantic import PrivateAttr
+
+class HeavyResource(Typed):
+    hf_model_id: str
+    _spawned: bool = PrivateAttr(default=False)
+
+    def post_initialize(self) -> None:
+        # Simulate spawning a worker / loading a model.
+        object.__setattr__(self, "_spawned", True)
+
+class Container(Typed):
+    target: HeavyResource
+
+# The expensive `post_initialize` runs once when HeavyResource is built.
+hr = HeavyResource(hf_model_id="qwen-3-4b")
+assert hr._spawned is True
+
+# Passing it to Container does NOT clone or re-spawn:
+c = Container(target=hr)
+assert c.target is hr             # same Python object
+assert c.target._spawned is True  # PrivateAttr preserved
+```
+
+### Why `post_initialize` Is Idempotent (the #12876 workaround)
+
+Pydantic v2 has a known behavior ([issue #12876](https://github.com/pydantic/pydantic/issues/12876)): `model_validator(mode="after")` re-fires on a nested model instance during the outer container's validation, even when `revalidate_instances="never"` preserves identity. Without intervention, this would cause `post_initialize` to run twice on the same instance every time it is held as a field of an outer Typed.
+
+Typed solves this with a per-instance `_typed_post_initialized: bool` `PrivateAttr` marker. The `model_validator(mode="after")` on Typed checks this marker and short-circuits on the second fire:
+
+```python
+@model_validator(mode="after")
+def _post_set_validate_inputs(self):
+    if self._typed_post_initialized:
+        return self    # Re-fire; no-op.
+    self.post_set_validate_inputs()
+    object.__setattr__(self, "_typed_post_initialized", True)
+    return self
+```
+
+This means **you do not need per-class idempotency guards** in `post_initialize` to handle Pydantic's re-fire behavior. The framework guarantees `post_initialize` (and `post_validate`) run exactly once per instance.
+
+You may still want a per-class guard for *other* reasons — e.g., if your `post_initialize` is invoked manually in addition to construction, or if you support `Model.model_validate(model.model_dump())` round-trips on heavy resources (which DO create a new instance, so they DO re-spawn).
 
 ```python
 class MutableConfig(MutableTyped):

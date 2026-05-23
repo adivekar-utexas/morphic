@@ -376,6 +376,61 @@ for i in range(100):
     processor = BaseProcessor.of(f"Processor{i}", name=f"proc_{i}")
 ```
 
+## CLI / BaseSettings with Registry
+
+Because every Typed inherits from `pydantic_settings.BaseSettings`, every concrete `Registry` subclass automatically supports `_cli_parse_args=...` and nested CLI overrides. The Registry factory (`Animal.of("Dog", ...)`) and the BaseSettings CLI source live on different axes:
+
+- **`Animal.of("key", **kwargs)`** dispatches to the right concrete subclass based on the registry key.
+- **`HttpBackend(_cli_parse_args=[...])`** parses argv into a specific concrete subclass.
+
+These compose naturally:
+
+```python
+from abc import ABC
+from morphic import Typed, Registry
+
+class Auth(Typed):
+    scheme: str = "bearer"
+    token: str = ""
+
+class Backend(Typed, Registry, ABC):
+    name: str
+
+class HttpBackend(Backend):
+    aliases = ("http",)
+    url: str = "http://localhost"
+    auth: Auth = Auth()
+
+# Resolve concrete class via Registry, then build via CLI:
+backend_cls = Backend.get_subclass("http")
+backend = backend_cls(_cli_parse_args=[
+    "--name", "primary",
+    "--auth.scheme", "basic",
+    "--auth.token", "secret-xyz",
+])
+assert isinstance(backend, HttpBackend)
+assert backend.auth.scheme == "basic"
+```
+
+Identity is also preserved when a Registry factory receives a pre-built nested Typed:
+
+```python
+class Inner(Typed):
+    name: str
+
+class Animal(Typed, Registry, ABC):
+    target: Inner
+
+class Dog(Animal):
+    aliases = ("canine",)
+
+i = Inner(name="bone")
+d = Animal.of("Dog", target=i)
+assert d.target is i  # NO clone, even via Registry.of()
+```
+
+See [Typed user guide → BaseSettings Integration](typed.md#basesettings-integration-cli-and-environment-variables) for the full CLI feature surface (kebab-case, implicit boolean flags, inline JSON, deep overrides).
+
 ## Best Practices
 
 ### 1. Define All Fields in Typed Models

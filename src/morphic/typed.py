@@ -18,9 +18,18 @@ from typing import (
     get_origin,
 )
 
-from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, model_validator, validate_call
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    PrivateAttr,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+    validate_call,
+)
 from pydantic.errors import PydanticSchemaGenerationError
 from pydantic_core import PydanticUndefined
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .autoenum import AutoEnum
 from .classproperty import classproperty
@@ -63,14 +72,26 @@ def _Typed_pformat(data: Any) -> str:
 T = TypeVar("T", bound="Typed")
 
 
-class Typed(BaseModel, ABC):
+class Typed(BaseSettings, ABC):
     """
-    Enhanced Pydantic BaseModel with advanced validation and utility features.
+    Enhanced Pydantic BaseSettings with advanced validation and utility features.
 
     Typed provides a powerful foundation for creating structured data models with automatic validation,
-    type conversion, serialization, and enhanced error handling. Built on top of Pydantic BaseModel,
-    it adds additional convenience methods and improved error reporting while maintaining full
-    compatibility with Pydantic's ecosystem.
+    type conversion, serialization, and enhanced error handling. Built on top of Pydantic's
+    :class:`pydantic_settings.BaseSettings` (which itself inherits from
+    :class:`pydantic.BaseModel`), Typed adds additional convenience methods, improved error
+    reporting, and lifecycle hooks while maintaining full compatibility with Pydantic's ecosystem
+    and pydantic-settings' CLI / environment-variable / dotenv source loading.
+
+    Why BaseSettings?
+        Inheriting from :class:`BaseSettings` gives every Typed subclass first-class CLI
+        and environment-variable support out of the box. When a Typed instance is constructed
+        without ``_cli_parse_args`` / ``_env_file`` / etc., the BaseSettings machinery is a
+        zero-cost no-op (the init kwargs are passed straight through to BaseModel validation).
+        When those flags ARE passed, deep nested CLI overrides like
+        ``--infra.ray-init.address ray://1.2.3.4:10001`` work natively, with the inner Typed
+        being validated exactly once and identity preserved when a pre-built instance is passed
+        as a field value (governed by ``revalidate_instances="never"`` — see below).
 
     Features:
         - **Enhanced Error Handling**: Detailed validation error messages with context
@@ -80,19 +101,31 @@ class Typed(BaseModel, ABC):
         - **Serialization**: JSON and dict serialization with customizable options
         - **Class Properties**: Convenient access to model metadata and field information
         - **Registry Integration**: Compatible with morphic.Registry for factory patterns
+        - **CLI / Env support**: Inherited from :class:`pydantic_settings.BaseSettings`
         - **Lifecycle Hooks**: Four customizable hooks for initialization and validation
             - `pre_initialize`: Set up derived fields before validation
             - `pre_validate`: Validate and normalize input data
-            - `post_initialize`: Perform side effects after validation
-            - `post_validate`: Validate the completed instance
+            - `post_initialize`: Perform side effects after validation (idempotent — runs
+              exactly once per instance even if Pydantic re-fires the underlying
+              ``model_validator(mode="after")`` due to nested-Typed re-validation, see
+              https://github.com/pydantic/pydantic/issues/12876).
+            - `post_validate`: Validate the completed instance (also idempotent)
 
     Configuration:
-        The class uses a pre-configured Pydantic ConfigDict with the following settings:
+        The class uses a pre-configured :class:`SettingsConfigDict` with the following settings:
 
         - `extra="forbid"`: Prevents extra fields not defined in the model
         - `frozen=True`: Makes instances immutable after creation
         - `validate_default=True`: Validates default values during model creation
         - `arbitrary_types_allowed=True`: Allows custom types that don't have Pydantic validators
+        - `revalidate_instances="never"`: Preserves instance identity when a pre-built Typed
+          is passed as a field of an outer Typed/Settings (avoids redundant re-validation
+          and clones — see :ref:`identity-preservation`).
+        - `cli_kebab_case=True`: CLI flags use kebab-case (``--ray-init`` not ``--ray_init``).
+        - `cli_implicit_flags=True`: Boolean fields auto-generate ``--flag`` / ``--no-flag`` pairs.
+        - `nested_model_default_partial_update=True`: When a nested model field has a default
+          model instance, deep CLI overrides like ``--inner.x.y VALUE`` merge on top of
+          the default rather than replacing it wholesale.
 
     Basic Usage:
         ```python
@@ -118,6 +151,41 @@ class Typed(BaseModel, ABC):
             invalid_user = User(name="Bob", age="invalid")
         except ValueError as e:
             print(e)  # Detailed error with field location and input
+        ```
+
+    CLI / Environment Usage:
+        ```python
+        from morphic.typed import Typed
+
+        class RayInit(Typed):
+            address: str = "auto"
+            num_cpus: int = 4
+
+        class Infra(Typed):
+            mode: str = "thread"
+            ray_init: RayInit = RayInit()
+
+        class App(Typed):
+            infra: Infra = Infra()
+            seed: int = 42
+
+        # Programmatic construction (BaseSettings is a no-op when no _* args are passed):
+        app = App()
+
+        # CLI: deep nested override works natively because every Typed is a BaseSettings.
+        app = App(_cli_parse_args=["--infra.ray-init.address", "ray://1.2.3.4:10001"])
+        assert app.infra.ray_init.address == "ray://1.2.3.4:10001"
+
+        # CLI: inline JSON also works.
+        app = App(_cli_parse_args=["--infra", '{"mode":"ray"}'])
+        assert app.infra.mode == "ray"
+
+        # CLI: inline JSON + deep override on the SAME field stack correctly.
+        app = App(_cli_parse_args=[
+            "--infra", '{"mode":"ray","ray_init":{"address":"ray://orig:10001"}}',
+            "--infra.ray-init.address", "ray://override:10001",
+        ])
+        assert app.infra.ray_init.address == "ray://override:10001"
         ```
 
     Advanced Usage:
@@ -241,7 +309,13 @@ class Typed(BaseModel, ABC):
 
     ## Pydantic V2 config schema:
     ## https://docs.pydantic.dev/2.1/blog/pydantic-v2-alpha/#changes-to-config
-    model_config = ConfigDict(
+    ##
+    ## We use SettingsConfigDict (a superset of ConfigDict) so every Typed subclass
+    ## inherits BaseSettings' CLI/env/dotenv source machinery for free. The settings
+    ## sources are inert when the user constructs an instance via plain kwargs
+    ## (no `_cli_parse_args=`, no `_env_file=`, etc.); they only kick in when those
+    ## flags are explicitly passed to the constructor.
+    model_config = SettingsConfigDict(
         ## Only string literal is needed for extra parameter
         ## https://docs.pydantic.dev/latest/api/config/#pydantic.config.ConfigDict.extra
         extra="forbid",
@@ -255,7 +329,104 @@ class Typed(BaseModel, ABC):
         validate_assignment=False,  ## Unnecessary since Typed is frozen
         ## Custom setting for private attribute validation
         validate_private_assignment=True,
+        ## Identity preservation: when a pre-built Typed instance is passed as a field
+        ## of an outer Typed (or BaseSettings), reuse it rather than re-validating /
+        ## cloning. Combined with the per-instance `_typed_post_initialized` marker,
+        ## this guarantees that `post_initialize` (which may spawn workers, load
+        ## models, etc.) runs exactly once per instance even though Pydantic's
+        ## `model_validator(mode="after")` re-fires due to bug #12876.
+        ## https://docs.pydantic.dev/latest/api/config/#pydantic.config.ConfigDict.revalidate_instances
+        ## https://github.com/pydantic/pydantic/issues/12876
+        revalidate_instances="never",
+        ## Pydantic-settings: deep CLI/env overrides for nested model fields.
+        ##
+        ## We deliberately leave this OFF (the pydantic-settings default). Setting
+        ## it to True breaks identity preservation: every pre-built Typed instance
+        ## passed as a field value would be dumped to a dict and re-validated,
+        ## creating a clone (defeating `revalidate_instances="never"` and double-
+        ## firing `post_initialize`).
+        ##
+        ## Deep CLI overrides like `--inner.x.y VALUE` work correctly without this
+        ## flag: pydantic-settings' CLI source emits nested dicts that are merged
+        ## via `deep_update`, so explicitly-set sub-keys override the default model's
+        ## sub-keys without dumping the entire default model.
+        ##
+        ## If a subclass genuinely needs partial-update semantics for default model
+        ## instances (e.g., env-var overrides on a nested model whose default is
+        ## non-empty), it can opt in via `model_config = SettingsConfigDict(...,
+        ## nested_model_default_partial_update=True)`.
+        # nested_model_default_partial_update intentionally NOT set
+        ## Pydantic-settings: don't auto-parse argv on every Typed construction.
+        ## We leave this as None (the pydantic-settings default) — CLI parsing is
+        ## activated only when the user explicitly passes `_cli_parse_args=True`
+        ## or `_cli_parse_args=[...]` to the constructor.
+        ##
+        ## DO NOT set this to False: pydantic-settings constructs a CliSettingsSource
+        ## whenever `cli_parse_args is not None`, including the value False, and
+        ## CliSettingsSource introspects every field's default value to build the
+        ## help text. That introspection calls `__str__` on default model instances,
+        ## which can fail (e.g., for Typed fields whose model contains non-JSON-
+        ## serializable values like `Type` or `Callable`).
+        # cli_parse_args intentionally NOT set; defaults to None.
+        ## Pydantic-settings: CLI flags use kebab-case by default for ergonomics.
+        cli_kebab_case=True,
+        ## Pydantic-settings: bool fields generate --flag / --no-flag pairs.
+        cli_implicit_flags=True,
     )
+
+    ## Per-instance marker that ensures `post_initialize` and `post_validate` run
+    ## exactly once per instance, even if Pydantic re-fires `model_validator(mode="after")`
+    ## due to nested-Typed re-validation (https://github.com/pydantic/pydantic/issues/12876).
+    ##
+    ## Without this marker, a heavy `post_initialize` (e.g., one that spawns a worker
+    ## or loads a model) would silently run twice every time the instance is held as
+    ## a field of an outer Typed/BaseSettings, even when `revalidate_instances="never"`
+    ## preserves identity. The marker makes idempotency a framework concern, not a
+    ## per-class concern.
+    _typed_post_initialized: bool = PrivateAttr(default=False)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type,
+        init_settings: Any,
+        env_settings: Any,
+        dotenv_settings: Any,
+        file_secret_settings: Any,
+    ) -> Tuple[Any, ...]:
+        """
+        Restrict the default settings sources to ``init_settings`` only.
+
+        :class:`pydantic_settings.BaseSettings` defaults to reading from environment
+        variables, ``.env`` files, and secret-file directories. For an
+        all-Typed-is-BaseSettings codebase this default is *catastrophic*: every
+        Typed model with a field named ``user``, ``home``, ``path``, ``shell``,
+        etc. would silently try to interpret the matching shell environment
+        variable (``USER``, ``HOME``, ``PATH``, ``SHELL``) as a value for that
+        field, almost always failing with a confusing ``SettingsError`` about
+        JSON-decoding a non-JSON string.
+
+        We disable env / dotenv / secret-file sources at the Typed level and require
+        users to opt in by overriding this classmethod on a specific subclass:
+
+        .. code-block:: python
+
+            class MyApp(Typed):
+                model_config = SettingsConfigDict(env_prefix="MYAPP_")
+
+                @classmethod
+                def settings_customise_sources(cls, settings_cls,
+                        init_settings, env_settings, dotenv_settings,
+                        file_secret_settings):
+                    # Re-enable env vars (with the MYAPP_ prefix above):
+                    return init_settings, env_settings, dotenv_settings, file_secret_settings
+
+        CLI parsing is independent of this method. It is enabled when the user
+        passes ``_cli_parse_args=...`` (or sets ``cli_parse_args=True`` /
+        ``cli_parse_args=[...]`` in ``model_config``); the CLI source is added
+        on top of whatever sources this method returns.
+        """
+        return (init_settings,)
 
     def __init__(self, /, **data: Dict[str, Any]):
         """
@@ -1257,6 +1428,10 @@ class Typed(BaseModel, ABC):
         """
         Default implementation of pre_set_validate_inputs, overridable by subclasses.
         """
+        ## Classes whose lifecycle hooks we should NOT walk into; defensive against
+        ## inherited stubs from Pydantic / pydantic-settings base classes.
+        _base_lifecycle_classes: Tuple[type, ...] = (BaseModel, BaseSettings)
+
         ## Set default values
         cls._set_default_values(data)
 
@@ -1268,7 +1443,7 @@ class Typed(BaseModel, ABC):
         ## Only call methods that are defined directly on each class to avoid duplicates
         ## Pass cls (the actual subclass) as context so class variables are accessible
         for base_cls in reversed(cls.__mro__[:-1]):  # Exclude object
-            if "pre_initialize" in base_cls.__dict__ and base_cls is not BaseModel:
+            if "pre_initialize" in base_cls.__dict__ and base_cls not in _base_lifecycle_classes:
                 # Get the unbound function and call with cls as the first argument
                 base_cls.__dict__["pre_initialize"].__func__(cls, data)
 
@@ -1276,7 +1451,7 @@ class Typed(BaseModel, ABC):
         ## Only call methods that are defined directly on each class to avoid duplicates
         ## Pass cls (the actual subclass) as context so class variables are accessible
         for base_cls in reversed(cls.__mro__[:-1]):  # Exclude object
-            if "pre_validate" in base_cls.__dict__ and base_cls is not BaseModel:
+            if "pre_validate" in base_cls.__dict__ and base_cls not in _base_lifecycle_classes:
                 # Get the unbound function and call with cls as the first argument
                 base_cls.__dict__["pre_validate"].__func__(cls, data)
 
@@ -1751,15 +1926,35 @@ class Typed(BaseModel, ABC):
 
     @model_validator(mode="after")
     def _post_set_validate_inputs(self) -> T:
+        ## Idempotency guard: Pydantic re-fires `model_validator(mode="after")` whenever
+        ## this instance is held as a field of an outer Typed/BaseSettings, even with
+        ## `revalidate_instances="never"`. See https://github.com/pydantic/pydantic/issues/12876
+        ##
+        ## Without this guard, a heavy `post_initialize` (spawning a worker, loading a
+        ## model into GPU memory, opening cloud connections) would run twice on the same
+        ## instance — once during the inner construction, again during the outer
+        ## construction. The marker makes the second fire a silent no-op.
+        if self._typed_post_initialized:
+            return self
         self.post_set_validate_inputs()
+        ## PrivateAttr assignment works on frozen models via direct attribute access.
+        ## Set the marker AFTER post_set_validate_inputs returns so that if any hook
+        ## raises, a future re-fire still attempts the work (matching pre-2.x morphic
+        ## behavior on retry).
+        object.__setattr__(self, "_typed_post_initialized", True)
         return self
 
     def post_set_validate_inputs(self) -> NoReturn:
+        ## Classes whose `post_initialize` / `post_validate` we should NOT walk into:
+        ## the Pydantic / pydantic-settings base classes themselves never define these,
+        ## but a defensive filter avoids accidentally invoking inherited stubs.
+        _base_lifecycle_classes: Tuple[type, ...] = (BaseModel, BaseSettings)
+
         ## Call post_initialize for each class in MRO (base to derived order)
         ## Only call methods that are defined directly on each class to avoid duplicates
         ## Get the unbound function to ensure proper context
         for base_cls in reversed(self.__class__.__mro__[:-1]):  # Exclude object
-            if "post_initialize" in base_cls.__dict__ and base_cls is not BaseModel:
+            if "post_initialize" in base_cls.__dict__ and base_cls not in _base_lifecycle_classes:
                 # Get the unbound function and call with self
                 base_cls.__dict__["post_initialize"](self)
 
@@ -1767,7 +1962,7 @@ class Typed(BaseModel, ABC):
         ## Only call methods that are defined directly on each class to avoid duplicates
         ## Get the unbound function to ensure proper context
         for base_cls in reversed(self.__class__.__mro__[:-1]):  # Exclude object
-            if "post_validate" in base_cls.__dict__ and base_cls is not BaseModel:
+            if "post_validate" in base_cls.__dict__ and base_cls not in _base_lifecycle_classes:
                 # Get the unbound function and call with self
                 base_cls.__dict__["post_validate"](self)
 
@@ -2409,7 +2604,7 @@ class MutableTyped(Typed):
         - Pydantic's `ConfigDict`: For advanced configuration options
     """
 
-    model_config = ConfigDict(
+    model_config = SettingsConfigDict(
         ## Ref: https://docs.pydantic.dev/latest/api/config/#pydantic.config.ConfigDict.frozen
         frozen=False,
         ## Ref: https://docs.pydantic.dev/latest/api/config/#pydantic.config.ConfigDict.validate_assignment
