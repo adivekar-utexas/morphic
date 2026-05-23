@@ -1,9 +1,12 @@
 """Enhanced base configuration class with Pydantic-like functionality."""
 
+import contextvars
 import functools
+import json as _json
 import textwrap
 import typing
 from abc import ABC
+from pathlib import Path
 from pprint import pformat
 from typing import (
     Any,
@@ -87,6 +90,449 @@ T = TypeVar("T", bound="Typed")
 ## ``__type__`` cannot accidentally collide with a user-defined field. The
 ## sentinel is popped before Pydantic sees the data.
 TYPED_REGISTRY_DISCRIMINATOR_KEY: str = "__type__"
+
+
+# ----------------------------------------------------------------------
+# TypedPath: load nested Typed fields from JSON / YAML files on disk.
+# ----------------------------------------------------------------------
+#
+# Usage:
+#
+#     from typing import Annotated
+#     from morphic import Typed, TypedPath
+#
+#     class JudgeConfig(Typed):
+#         llm: Annotated[LLMConfig, TypedPath]
+#         infra: Annotated[InfraConfig, TypedPath]
+#
+# A field annotated with ``Annotated[X, TypedPath]`` accepts THREE kinds
+# of input:
+#
+#   1. A pre-built ``X`` instance.            → identity preserved.
+#   2. A dict matching ``X``'s schema.        → validated as ``X``.
+#   3. A path string ending in ``.json``,     → file read, parsed,
+#      ``.yaml``, or ``.yml`` (or a ``Path``     validated as ``X``.
+#      object pointing to such a file).
+#
+# Path resolution rules (in order):
+#
+#   - Absolute path: used as-is.
+#   - Relative path: resolved against the directory of the parent
+#     JSON/YAML file currently being loaded (via the
+#     ``_typed_path_loading_dir`` context variable). If there is no
+#     parent file (programmatic / top-level CLI case), resolved against
+#     the current working directory.
+#
+# This recursive resolution is what makes nested config files work.
+# ``configs/judges/wildguard.json`` can have ``"llm": "../../llm/wildguard.json"``,
+# which itself has ``"infra": "../infra/sync.json"`` — every relative
+# path is resolved against its own parent file's directory.
+#
+# CLI integration: ``Typed.parse_cli_args`` preprocesses argv before
+# pydantic-settings sees it, replacing ``--<field> <path>`` with
+# ``--<field> '<json-of-loaded-file>'`` for any TypedPath-annotated
+# field. This makes deep CLI overrides like ``--target file.json
+# --target.prompt-prefix X`` work natively (the file's content becomes
+# inline JSON, then pydantic-settings deep-merges sibling sub-flags).
+
+
+class _TypedPathMarker:
+    """Marker class for ``Annotated[X, TypedPath]``.
+
+    The module-level singleton ``TypedPath`` is the canonical instance.
+    Calling ``TypedPath()`` returns the same singleton (so ``Annotated[X,
+    TypedPath]`` and ``Annotated[X, TypedPath()]`` are equivalent).
+    """
+
+    _instance: ClassVar[Optional["_TypedPathMarker"]] = None
+
+    def __new__(cls) -> "_TypedPathMarker":
+        ## Singleton: there is exactly one ``_TypedPathMarker`` per process.
+        ## The bare-class form ``Annotated[X, TypedPath]`` and the called
+        ## form ``Annotated[X, TypedPath()]`` both refer to it.
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __call__(self) -> "_TypedPathMarker":
+        ## Allow ``TypedPath()`` to be used interchangeably with ``TypedPath``.
+        return self
+
+    def __repr__(self) -> str:
+        return "TypedPath"
+
+
+## The canonical singleton. Users import this and put it in Annotated.
+TypedPath: _TypedPathMarker = _TypedPathMarker()
+
+
+## File-extension → loader mapping. YAML support is opt-in via the
+## ``pyyaml`` dependency; the import is lazy so morphic does not require
+## yaml to be installed unless a ``.yaml`` / ``.yml`` path actually
+## arrives at validation time.
+_TYPED_PATH_EXTENSIONS: Tuple[str, ...] = (".json", ".yaml", ".yml")
+
+
+## ContextVar tracking the directory of the parent file currently being
+## loaded. When a TypedPath field's value is a relative path string, we
+## resolve it against this directory. The ContextVar stack is set/reset
+## around each file load so nested loads see the CORRECT parent dir
+## (the file CURRENTLY being loaded, not the outermost one).
+##
+## Why ContextVar (not threading.local): ContextVar correctly propagates
+## across asyncio tasks and coroutines, and Pydantic's validation
+## machinery is sometimes invoked from async contexts (e.g., via
+## pydantic-settings + async sources).
+_typed_path_loading_dir: contextvars.ContextVar[Optional[Path]] = contextvars.ContextVar(
+    "_typed_path_loading_dir", default=None
+)
+
+
+def _typed_path_field_has_marker(field_info: Any) -> bool:
+    """True if this Pydantic FieldInfo has TypedPath in its ``Annotated`` metadata.
+
+    Works regardless of whether the user wrote ``Annotated[X, TypedPath]``
+    (bare singleton) or ``Annotated[X, TypedPath()]`` (called form).
+    """
+    metadata = getattr(field_info, "metadata", None) or ()
+    for meta in metadata:
+        if meta is TypedPath:
+            return True
+        if isinstance(meta, _TypedPathMarker):
+            return True
+    return False
+
+
+def _typed_path_looks_like_path(value: Any) -> bool:
+    """True if ``value`` is a string or Path ending in a TypedPath-loadable extension."""
+    if isinstance(value, Path):
+        return value.suffix.lower() in _TYPED_PATH_EXTENSIONS
+    if isinstance(value, str):
+        lowered = value.lower()
+        return any(lowered.endswith(ext) for ext in _TYPED_PATH_EXTENSIONS)
+    return False
+
+
+def _typed_path_resolve(value: Any) -> Path:
+    """Resolve a path string/Path to an absolute path using the parent-file rule.
+
+    - Absolute paths are returned as-is (just resolved to remove ``..``).
+    - Relative paths are resolved against the ContextVar's parent dir
+      if set, else against the current working directory.
+    """
+    p = value if isinstance(value, Path) else Path(str(value))
+    if p.is_absolute():
+        return p.resolve()
+    base = _typed_path_loading_dir.get()
+    if base is not None:
+        return (base / p).resolve()
+    return p.resolve()
+
+
+def _typed_path_load_file(value: Any, *, field_name: str) -> Any:
+    """Read a JSON or YAML file and return the parsed dict.
+
+    The caller's responsibility:
+    - Has already determined the value looks like a path (via
+      :func:`_typed_path_looks_like_path`).
+
+    Sets the ``_typed_path_loading_dir`` ContextVar to the loaded file's
+    directory so that nested TypedPath fields with relative paths
+    resolve against THIS file's dir (not the original outermost call).
+
+    Args:
+        value: A path string or ``pathlib.Path``.
+        field_name: Used in error messages so users can tell which field
+            had the bad path. The full Pydantic field path is built up
+            elsewhere; here we just take the leaf name.
+
+    Raises:
+        FileNotFoundError: with a message naming the field and the
+            resolved absolute path.
+        ValueError: if the file's parsed content is not a JSON/YAML
+            object (must be a mapping, not a list or scalar) — Typed
+            constructors take ``**kwargs`` so the loaded data must be
+            a mapping.
+        ImportError: if a YAML file is provided but ``pyyaml`` is not
+            installed in the environment.
+    """
+    resolved = _typed_path_resolve(value)
+    if not resolved.exists():
+        raise FileNotFoundError(
+            f"TypedPath field {field_name!r} points at a file that does not exist: "
+            f"{resolved} (input was {value!r})"
+        )
+    if not resolved.is_file():
+        raise ValueError(
+            f"TypedPath field {field_name!r} resolved to {resolved}, which is not a regular file."
+        )
+
+    suffix = resolved.suffix.lower()
+    text = resolved.read_text(encoding="utf-8")
+    if suffix == ".json":
+        try:
+            data = _json.loads(text)
+        except _json.JSONDecodeError as e:
+            raise ValueError(
+                f"TypedPath field {field_name!r}: failed to parse JSON file {resolved}: {e}"
+            ) from e
+    elif suffix in (".yaml", ".yml"):
+        try:
+            import yaml  # type: ignore[import-not-found]
+        except ImportError as e:
+            raise ImportError(
+                f"TypedPath field {field_name!r}: file {resolved} is a YAML "
+                f"file but the ``pyyaml`` package is not installed. "
+                f"Install it with ``pip install pyyaml``."
+            ) from e
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError as e:  # type: ignore[name-defined]
+            raise ValueError(
+                f"TypedPath field {field_name!r}: failed to parse YAML file {resolved}: {e}"
+            ) from e
+    else:  # pragma: no cover -- gated by _typed_path_looks_like_path
+        raise ValueError(
+            f"TypedPath field {field_name!r}: unsupported file extension "
+            f"{suffix!r}. Supported: {_TYPED_PATH_EXTENSIONS}."
+        )
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"TypedPath field {field_name!r}: file {resolved} parsed as "
+            f"{type(data).__name__}, but Typed fields require a mapping (dict). "
+            f"The file's top-level value must be a JSON object / YAML mapping."
+        )
+    return data
+
+
+def _typed_path_load_value(value: Any, *, field_name: str) -> Any:
+    """Load a path-like value, returning the parsed mapping.
+
+    If ``value`` does not look like a path (not a string/Path ending in
+    a supported extension), it is returned unchanged. Otherwise, the
+    file is read and parsed.
+
+    NOTE: this function does NOT touch the ``_typed_path_loading_dir``
+    ContextVar. The caller is responsible for setting it around the
+    subsequent validation of the loaded dict, so that nested TypedPath
+    fields (with relative paths) resolve against THIS file's directory.
+    See :meth:`Typed._pre_set_validate_inputs` for the lifecycle.
+    """
+    if not _typed_path_looks_like_path(value):
+        return value
+    return _typed_path_load_file(value, field_name=field_name)
+
+
+def _typed_path_unwrap_inner_type(annotation: Any) -> Optional[type]:
+    """Given a field annotation, return the inner Typed subclass if there is one.
+
+    Handles ``Annotated[X, ...]``, ``Optional[X]``, and ``Union[X, None]``.
+    Returns ``None`` if the annotation is not a (Typed) class or
+    cannot be unambiguously resolved.
+
+    This is used to recurse into nested TypedPath loading: after loading
+    ``wildguard.json``, if the field's inner type is ``LLMConfig`` and
+    ``LLMConfig`` has its own TypedPath fields, we need to recursively
+    resolve THOSE paths relative to ``wildguard.json``'s directory.
+    """
+    ## Strip ``Annotated[T, ...]`` outer wrapper if present.
+    origin = get_origin(annotation)
+    if origin is typing.Annotated:
+        annotation = get_args(annotation)[0]
+        origin = get_origin(annotation)
+
+    if origin is typing.Union:
+        ## Strip ``Optional[X]`` / ``Union[X, None]``.
+        non_none = [a for a in get_args(annotation) if a is not type(None)]
+        if len(non_none) == 1:
+            annotation = non_none[0]
+        else:
+            ## True multi-member union (e.g., ``Union[A, B]``). We can
+            ## still recurse, but only if every member is a Typed
+            ## subclass — picking which member to descend into is
+            ## ambiguous, so we punt and let Pydantic handle it.
+            return None
+
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    return None
+
+
+def _typed_path_recursive_load(
+    value: Any,
+    *,
+    field_name: str,
+    inner_type: Optional[type],
+) -> Any:
+    """Load ``value`` as a path (if it looks like one) and recurse into the
+    loaded dict's own TypedPath fields.
+
+    The ContextVar ``_typed_path_loading_dir`` is set during the recursion
+    so nested relative paths resolve against the CURRENT file's directory.
+    The ContextVar is restored on return.
+
+    Args:
+        value: The raw input — instance, dict, path string, or anything
+            else. Non-path values are returned unchanged.
+        field_name: Used for error messages; identifies which field had
+            the bad value.
+        inner_type: The Typed subclass that the field annotation resolves
+            to, with ``Annotated``/``Optional``/``Union`` unwrapped. If
+            ``None``, no recursion is performed (we just load this one
+            level and let Pydantic handle the rest).
+    """
+    if not _typed_path_looks_like_path(value):
+        return value
+    resolved = _typed_path_resolve(value)
+    data = _typed_path_load_file(value, field_name=field_name)
+
+    ## Set the ContextVar so nested TypedPath fields in the loaded dict
+    ## resolve relative paths against THIS file's directory. We restore
+    ## the previous value on return so callers see no leakage.
+    token = _typed_path_loading_dir.set(resolved.parent)
+    try:
+        if inner_type is not None and isinstance(data, dict):
+            _typed_path_resolve_in_dict(inner_type, data)
+    finally:
+        _typed_path_loading_dir.reset(token)
+    return data
+
+
+def _typed_path_resolve_in_dict(cls: type, data: Dict[str, Any]) -> None:
+    """For each TypedPath field of ``cls`` present in ``data``, load any
+    path-string values into dicts in-place.
+
+    This is the recursive step. Called both from the outer
+    ``_pre_set_validate_inputs`` (when the user is building a Typed at
+    the top level) and from ``_typed_path_recursive_load`` (when a
+    parent file is being loaded and its loaded-dict needs to have ITS
+    nested TypedPath fields resolved against the parent's directory).
+    """
+    if not isinstance(data, dict):
+        return
+    if not hasattr(cls, "model_fields"):
+        return
+    for fname, finfo in cls.model_fields.items():
+        if fname not in data:
+            continue
+        if not _typed_path_field_has_marker(finfo):
+            continue
+        inner_type = _typed_path_unwrap_inner_type(finfo.annotation)
+        data[fname] = _typed_path_recursive_load(
+            data[fname],
+            field_name=fname,
+            inner_type=inner_type,
+        )
+
+
+def _typed_path_collect_marked_field_names(cls: type) -> Set[str]:
+    """Return the set of TypedPath-annotated field names directly on ``cls``.
+
+    Used by the argv preprocessor to know which top-level CLI flags
+    (e.g., ``--llm``) to intercept.
+    """
+    out: Set[str] = set()
+    if not hasattr(cls, "model_fields"):
+        return out
+    for fname, finfo in cls.model_fields.items():
+        if _typed_path_field_has_marker(finfo):
+            out.add(fname)
+    return out
+
+
+def _typed_path_preprocess_argv(cls: type, argv: List[str]) -> List[str]:
+    """Replace ``--<field> <path>`` (or ``--<field>=<path>``) for TypedPath
+    fields with ``--<field> '<json-encoded>'`` BEFORE pydantic-settings sees argv.
+
+    Why: pydantic-settings' CLI source treats nested-model fields as
+    "complex" and tries to ``json.loads`` the value. A path string like
+    ``configs/foo.json`` is not valid JSON, so the source raises
+    ``SettingsError`` before our before-validator can run. By
+    pre-loading the file here and replacing the value with the
+    JSON-encoded content, pydantic-settings sees valid JSON, which
+    deep-merges naturally with sibling sub-flags like
+    ``--<field>.<sub.path> VALUE``.
+
+    Recursive resolution: when the loaded file references nested
+    TypedPath fields (e.g., a JudgeCfg file references an LLM file
+    which references an Infra file), we recurse INSIDE the
+    preprocessor so that all relative paths are resolved against
+    THEIR parent file's directory before the JSON-encoded result is
+    handed to pydantic-settings. The ContextVar
+    ``_typed_path_loading_dir`` is set transiently around each load.
+
+    The preprocessor is conservative: only fields that are TypedPath-
+    annotated on ``cls`` are intercepted. Other fields' argv tokens are
+    passed through unchanged.
+
+    Both space-separated (``--field value``) and equals-separated
+    (``--field=value``) forms are handled. Both kebab-case
+    (``--field-name``) and snake-case (``--field_name``) variants of
+    the flag are accepted (matching pydantic-settings' default).
+    """
+    marked = _typed_path_collect_marked_field_names(cls)
+    if not marked:
+        return list(argv)
+
+    ## Build the set of valid CLI flag spellings for the marked fields.
+    ## pydantic-settings uses kebab-case by default (Typed.model_config has
+    ## ``cli_kebab_case=True``), but we accept snake-case too for safety.
+    flag_to_field: Dict[str, str] = {}
+    for fname in marked:
+        flag_to_field[f"--{fname.replace('_', '-')}"] = fname
+        flag_to_field[f"--{fname}"] = fname
+
+    out: List[str] = []
+    i = 0
+    n = len(argv)
+    while i < n:
+        tok = argv[i]
+        replaced = False
+
+        ## Form A: ``--field value`` (separate tokens). Only intercept if
+        ## the value looks like a path; otherwise pass through.
+        if tok in flag_to_field and i + 1 < n:
+            field_name = flag_to_field[tok]
+            val = argv[i + 1]
+            if _typed_path_looks_like_path(val):
+                ## Use _typed_path_recursive_load so any nested TypedPath
+                ## fields inside the loaded dict ALSO get their paths
+                ## resolved (against the loaded file's directory). This
+                ## makes the trojanshot Judge -> LLM -> Infra chain
+                ## work via the CLI.
+                inner_type = _typed_path_unwrap_inner_type(cls.model_fields[field_name].annotation)
+                loaded = _typed_path_recursive_load(
+                    val,
+                    field_name=field_name,
+                    inner_type=inner_type,
+                )
+                out.append(tok)
+                out.append(_json.dumps(loaded))
+                i += 2
+                replaced = True
+
+        ## Form B: ``--field=value`` (single token).
+        if not replaced and tok.startswith("--") and "=" in tok:
+            head, _, val = tok.partition("=")
+            if head in flag_to_field:
+                field_name = flag_to_field[head]
+                if _typed_path_looks_like_path(val):
+                    inner_type = _typed_path_unwrap_inner_type(cls.model_fields[field_name].annotation)
+                    loaded = _typed_path_recursive_load(
+                        val,
+                        field_name=field_name,
+                        inner_type=inner_type,
+                    )
+                    out.append(f"{head}={_json.dumps(loaded)}")
+                    i += 1
+                    replaced = True
+
+        if not replaced:
+            out.append(tok)
+            i += 1
+
+    return out
 
 
 def _scan_argv_for_type_flags(argv: List[str]) -> Dict[Tuple[str, ...], str]:
@@ -967,6 +1413,15 @@ class Typed(BaseSettings, ABC):
         # Resolve every abstract Registry field at any depth to its concrete
         # subclass, dynamically rebuilding the class hierarchy if needed.
         concrete_cls = _resolve_concrete_typed_class(target_cls, type_map)
+
+        # TypedPath argv preprocessing: replace any ``--<field> <path>`` for
+        # TypedPath-annotated fields with ``--<field> '<json-encoded-content>'``
+        # BEFORE pydantic-settings sees it. This makes the file's content
+        # available to pydantic-settings' deep-merge machinery, so deep CLI
+        # overrides like ``--target file.json --target.prompt-prefix X`` work
+        # natively (the file becomes inline JSON, then pydantic-settings
+        # deep-merges sibling sub-flags on top).
+        clean_argv = _typed_path_preprocess_argv(concrete_cls, clean_argv)
 
         return concrete_cls(_cli_parse_args=clean_argv, **kwargs)
 
@@ -1853,6 +2308,16 @@ class Typed(BaseSettings, ABC):
         ## Classes whose lifecycle hooks we should NOT walk into; defensive against
         ## inherited stubs from Pydantic / pydantic-settings base classes.
         _base_lifecycle_classes: Tuple[type, ...] = (BaseModel, BaseSettings)
+
+        ## TypedPath resolution: any field annotated ``Annotated[X, TypedPath]``
+        ## that received a path string / Path object is loaded from disk
+        ## here, BEFORE defaults are applied or nested Typeds are converted.
+        ## The loader resolves relative paths against the parent file's
+        ## directory if any (via the ``_typed_path_loading_dir`` ContextVar).
+        ## This is the entry point to the recursive load chain that handles
+        ## configs/judges/wildguard.json -> configs/llm/wildguard.json ->
+        ## configs/infra/sync.json transparently.
+        _typed_path_resolve_in_dict(cls, data)
 
         ## Set default values
         cls._set_default_values(data)

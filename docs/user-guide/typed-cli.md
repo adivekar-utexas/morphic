@@ -45,6 +45,8 @@ app = App(_cli_parse_args=["--name", "alice", "--seed", "7"])
 | Repeated flag | `--name a --name b` | Last one wins |
 | Registry discriminator | `--backend.__type__ http` | Picks the concrete subclass for a `Typed + Registry` field; use [`parse_cli_args`](#pattern-registry-dispatch-with-__type__-discriminator) |
 | Discriminator inside inline JSON | `--backend '{"__type__":"http",...}'` | Same dispatch via inline JSON |
+| Path to JSON / YAML file | `--llm configs/llm/qwen.json` | For fields annotated `Annotated[X, TypedPath]`; see [TypedPath fields and the CLI](#typedpath-fields-and-the-cli) |
+| Path-loaded file + deep override | `--llm path.json --llm.model X` | File sets baseline, deep flag patches one leaf |
 
 ## Quick reference: what does NOT work by default
 
@@ -1004,6 +1006,171 @@ Fix: either
 
 1. Split into per-field flags: `--infra '{...}' --seed 42`.
 2. Use the [JSON-File config pattern](#pattern-json-file-config-with-cli-overrides) which loads root-level JSON properly.
+
+## TypedPath fields and the CLI
+
+`TypedPath` is a feature of `Typed` itself — it makes any field accept a path to a JSON / YAML file in addition to inline values. See [Typed user guide → Loading Typed fields from JSON / YAML files](typed.md#loading-typed-fields-from-json--yaml-files-typedpath) for the full feature description (programmatic usage, dict input, error semantics, identity preservation, optional fields, edge cases).
+
+This section covers the CLI-specific behaviors: how path-loaded fields interact with `parse_cli_args`, deep overrides, and pydantic-settings.
+
+### Annotation reminder
+
+```python
+from typing import Annotated, Optional
+from morphic import Typed, TypedPath
+
+class JudgeConfig(Typed):
+    llm: Annotated[LLMConfig, TypedPath]
+    infra: Annotated[InfraConfig, TypedPath]
+    refusal_classifier: Annotated[Optional[JudgeConfig], TypedPath] = None
+```
+
+`TypedPath` is a singleton — bare, no parens. `Annotated[X, TypedPath()]` (with parens) also works since the call returns the same singleton.
+
+### CLI usage
+
+`parse_cli_args` understands TypedPath-annotated fields and accepts path strings as values:
+
+```bash
+# Path to JSON file:
+python script.py --llm configs/llm/qwen.json
+
+# Path to YAML file (pyyaml must be installed):
+python script.py --llm configs/llm/qwen.yaml
+
+# Equals form:
+python script.py --llm=configs/llm/qwen.json
+
+# Inline JSON instead of a path (no .json/.yaml suffix on the value):
+python script.py --llm '{"model":"qwen","infra":{"mode":"Ray"}}'
+```
+
+The script:
+
+```python
+class JudgeConfig(Typed):
+    llm: Annotated[LLMConfig, TypedPath]
+
+if __name__ == "__main__":
+    config = JudgeConfig.parse_cli_args()
+```
+
+### CLI deep override on a path-loaded field
+
+This is the killer feature: load a base config from disk, then patch one or more leaves on the command line:
+
+```bash
+python script.py \
+    --llm configs/llm/qwen.json \
+    --llm.model qwen-large \
+    --llm.infra.address ray://prod:10001
+```
+
+The flow:
+
+1. `parse_cli_args` scans argv, sees `--llm <path.json>`, loads the file, and replaces the value with the inline-JSON-encoded contents.
+2. Pydantic-settings parses the rewritten argv. The CLI source emits `{"llm": {<contents>}}`.
+3. The deep-override flags `--llm.model qwen-large` and `--llm.infra.address ray://...` produce `{"llm": {"model": "qwen-large"}}` and `{"llm": {"infra": {"address": "..."}}}`.
+4. Pydantic-settings' `deep_update` merges these onto the loaded baseline. The override wins on every leaf key it explicitly sets; everything else stays from the file.
+
+The merge happens at the dict level, BEFORE the inner Typed is validated, so a `--llm.<sub>` flag works regardless of whether the sub-key was present in the JSON file.
+
+### Why this works (without a custom CLI source)
+
+Pydantic-settings' CLI source treats nested-model fields as "complex" and unconditionally calls `json.loads` on their values. A path string like `configs/foo.json` isn't valid JSON, so without intervention you'd get `SettingsError: error parsing value for field "llm" from source "CliSettingsSource"`.
+
+morphic handles this by preprocessing argv inside `parse_cli_args`: it walks the model's TypedPath-annotated fields, finds matching `--field <value>` (or `--field=<value>`) tokens where the value looks like a path, loads the file, and replaces the argv token with the JSON-encoded file contents. Pydantic-settings then handles everything from there using its native code paths — no custom `CliSettingsSource` subclass, no monkeypatching.
+
+### Path resolution rules apply on the CLI too
+
+The path resolution rules from [the Typed guide](typed.md#path-resolution-rules) apply to CLI input identically:
+
+```bash
+# Absolute path: used as-is.
+python script.py --llm /abs/path/qwen.json
+
+# Relative path: resolved against the current working directory.
+python script.py --llm configs/llm/qwen.json   # cwd-relative
+
+# Inside the loaded file, relative paths are resolved against THAT file's directory:
+# configs/llm/qwen.json:   {"infra": "../infra/sync.json"}
+#                          → resolved against configs/llm/, NOT cwd
+```
+
+This makes multi-level config trees work without any "config root" environment variable or custom resolution logic.
+
+### Multiple TypedPath fields in one CLI invocation
+
+```python
+class App(Typed):
+    target: Annotated[LLMConfig, TypedPath]
+    judge: Annotated[JudgeConfig, TypedPath]
+    refusal_classifier: Annotated[Optional[JudgeConfig], TypedPath] = None
+```
+
+```bash
+python train.py \
+    --target configs/llm/qwen-2-5-7b.json \
+    --judge configs/judges/wildguard.json \
+    --judge.llm.infra.address ray://prod:10001 \
+    --refusal-classifier configs/judges/promptguard.json
+```
+
+Each TypedPath field is loaded independently. Deep overrides target each one separately.
+
+### Optional TypedPath fields on the CLI
+
+`Annotated[Optional[X], TypedPath] = None` works on the CLI:
+
+```bash
+# Field omitted → stays None.
+python script.py --target configs/llm/qwen.json
+
+# Field explicitly set to None via inline JSON literal:
+python script.py --refusal-classifier null
+
+# Field set to a path:
+python script.py --refusal-classifier configs/judges/promptguard.json
+```
+
+### CLI errors
+
+| Scenario | What happens |
+|---|---|
+| `--llm /missing.json` | `FileNotFoundError` with field name + resolved absolute path |
+| `--llm /broken.json` (invalid JSON) | `ValueError` with file path + JSON parse error |
+| `--llm /list.json` (top-level is a JSON array, not object) | `ValueError`: the file's top-level value must be a mapping |
+| `--llm "not-a-path"` (string with no `.json`/`.yaml`/`.yml` suffix) | Falls through to pydantic-settings' normal CLI parsing → `SettingsError` because the string isn't valid JSON for a complex field |
+
+### Composing TypedPath with discriminator dispatch
+
+When a TypedPath field's inner type is a `Typed + Registry` abstract base, the loaded JSON/YAML can include a `__type__` discriminator to pick the concrete subclass. See [Typed CLI guide → Pattern: Registry dispatch](#pattern-registry-dispatch-with-__type__-discriminator) for the discriminator details.
+
+```python
+class Backend(Typed, Registry, ABC):
+    name: str
+
+class HttpBackend(Backend):
+    aliases = ("http",)
+    url: str
+
+class App(Typed):
+    backend: Annotated[Backend, TypedPath]
+```
+
+`configs/backends/prod.json`:
+```json
+{
+    "__type__": "http",
+    "name": "prod",
+    "url": "https://api.example.com"
+}
+```
+
+```bash
+python script.py --backend configs/backends/prod.json
+# → app.backend is an HttpBackend instance
+```
 
 ## See also
 

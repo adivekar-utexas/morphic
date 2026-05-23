@@ -91,6 +91,7 @@ from .typed import (
     TYPED_REGISTRY_DISCRIMINATOR_KEY,
     MutableTyped,
     Typed,
+    TypedPath,
     ValidationError,
     validate,
 )
@@ -104,6 +105,7 @@ __all__ = [
     "Typed",
     "MutableTyped",
     "TYPED_REGISTRY_DISCRIMINATOR_KEY",
+    "TypedPath",
     "validate",
     "ValidationError",
     "classproperty",

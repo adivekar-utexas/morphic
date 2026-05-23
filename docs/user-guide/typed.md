@@ -13,6 +13,7 @@ Typed is built on Pydantic's `BaseSettings` (a `BaseModel` with extra `__init__`
 - **Advanced error handling** - Enhanced error messages with detailed validation information
 - **Hierarchical type support** - Nested Typed objects, lists, and dictionaries with automatic conversion
 - **Identity preservation** - A pre-built Typed passed as a field of an outer Typed is reused, not cloned (`revalidate_instances="never"`)
+- **Load from JSON / YAML files** - Annotate any field with `Annotated[X, TypedPath]` to make it accept a path to a file in addition to instances and dicts; see [Loading Typed fields from JSON / YAML files (TypedPath)](#loading-typed-fields-from-json--yaml-files-typedpath)
 - **CLI integration** - Every Typed accepts `_cli_parse_args=...` and supports nested overrides (`--infra.ray-init.address X`); use [`Config.parse_cli_args()`](typed-cli.md#pattern-pure-native-cli) as the recommended entrypoint
 - **Registry CLI dispatch** - Typed + Registry hierarchies support `__type__` discriminator dispatch in kwargs, dict input, and CLI flags (`--backend.__type__ http`); see [Typed CLI guide](typed-cli.md#pattern-registry-dispatch-with-__type__-discriminator)
 - **Source isolation** - Environment variables and dotenv files are NOT read by default, so a field named `user` won't accidentally pick up `$USER`
@@ -349,6 +350,199 @@ try:
 except ValidationError:
     print("Assignment validation failed")
 ```
+
+## Loading Typed fields from JSON / YAML files (TypedPath)
+
+`TypedPath` is a marker that turns any field into a "path-loadable" field. The user can pass either an inline value (instance, dict) or a path to a `.json` / `.yaml` / `.yml` file, and the file's contents are loaded, parsed, and validated as the field's type.
+
+This works **everywhere** — programmatically, in dict inputs, in CLI flags. Although the CLI is the most common motivation (deeply-nested configs are awkward to express as one inline JSON string on the command line), the same field also accepts paths when constructed from Python code, which makes notebook workflows and tests straightforward.
+
+### Annotation
+
+```python
+from typing import Annotated, Optional
+from morphic import Typed, TypedPath
+
+class JudgeConfig(Typed):
+    llm: Annotated[LLMConfig, TypedPath]
+    infra: Annotated[InfraConfig, TypedPath]
+    refusal_classifier: Annotated[Optional[JudgeConfig], TypedPath] = None
+```
+
+`TypedPath` is a singleton — it does not take any arguments and you do not call it. Just write `Annotated[X, TypedPath]` (no parens). `Annotated[X, TypedPath()]` also works (the call returns the same singleton), but the bare form is preferred so users don't have to remember to instantiate it.
+
+### Three accepted input forms
+
+A field annotated `Annotated[X, TypedPath]` accepts three kinds of value, in any context (programmatic, dict, CLI):
+
+1. **A pre-built `X` instance** — passed through unchanged, identity preserved.
+2. **A dict matching `X`'s schema** — validated as `X`.
+3. **A path string or `Path` object** ending in `.json`, `.yaml`, or `.yml` — the file is read, parsed, and validated as `X`.
+
+#### Programmatic construction
+
+```python
+from pathlib import Path
+from morphic import Typed, TypedPath
+from typing import Annotated
+
+class LLMConfig(Typed):
+    model: str
+    timeout: float = 30.0
+
+class App(Typed):
+    llm: Annotated[LLMConfig, TypedPath]
+
+# Form 1: pre-built instance — identity preserved
+llm = LLMConfig(model="qwen", timeout=60.0)
+app = App(llm=llm)
+assert app.llm is llm   # same instance
+
+# Form 2: dict
+app = App(llm={"model": "qwen", "timeout": 60.0})
+assert isinstance(app.llm, LLMConfig)
+
+# Form 3a: path string (relative or absolute)
+app = App(llm="configs/llm/qwen.json")
+
+# Form 3b: pathlib.Path object
+app = App(llm=Path("configs/llm/qwen.yaml"))
+```
+
+YAML support requires `pyyaml` to be installed. If a `.yaml` / `.yml` path arrives but `pyyaml` isn't installed, you get a clear `ImportError` pointing at the missing package. JSON is always supported (Python stdlib).
+
+#### Dict input with embedded paths
+
+This pattern is common when constructing a Typed from JSON data that someone else parsed for you:
+
+```python
+data = {
+    "llm": "configs/llm/qwen.json",       # Path string inside a dict
+    "infra": {"mode": "Sync"},            # Inline dict for another field
+}
+app = App.model_validate(data)
+```
+
+The path string for `llm` triggers file loading; the inline dict for `infra` is used as-is.
+
+#### CLI input
+
+The CLI just routes to the same path-loading machinery via [`Config.parse_cli_args`](typed-cli.md#pattern-pure-native-cli):
+
+```bash
+python script.py --llm configs/llm/qwen.json --infra configs/infra/ec2-ray.json
+
+# Or override individual leaves of the loaded file:
+python script.py --llm configs/llm/qwen.json --llm.model qwen-large
+```
+
+See [the CLI guide](typed-cli.md#typedpath-load-nested-fields-from-json--yaml-files) for full CLI semantics including deep overrides on path-loaded fields.
+
+### Path resolution rules
+
+Three rules, in this order:
+
+1. **Absolute paths** are used as-is.
+2. **Relative paths inside a loaded file** are resolved against the directory of THAT file (the parent file currently being loaded).
+3. **Relative paths from outside any file** (programmatic / top-level CLI input) are resolved against the current working directory.
+
+The "parent file's directory" rule (#2) makes nested config files compose without any work from the user. Consider this layout:
+
+```
+configs/
+├── judges/
+│   └── wildguard.json   ──> {"llm": "../../llm/wildguard.json", "name": "wildguard"}
+├── llm/
+│   └── wildguard.json   ──> {"model": "...", "infra": "../infra/sync.json"}
+└── infra/
+    └── sync.json        ──> {"mode": "Sync"}
+```
+
+When you run `JudgeConfig.parse_cli_args(["--judge", "configs/judges/wildguard.json"])`:
+
+1. The outer file `configs/judges/wildguard.json` is loaded.
+2. Its `"llm"` field has the relative path `"../../llm/wildguard.json"`. This is resolved against `configs/judges/`, giving `configs/llm/wildguard.json`.
+3. That file is loaded. Its `"infra"` field has the relative path `"../infra/sync.json"`, which is resolved against `configs/llm/`, giving `configs/infra/sync.json`.
+4. That file is loaded.
+
+You don't pass any "config root" parameter; the parent-dir rule threads through all the levels automatically.
+
+### Optional fields
+
+`Annotated[Optional[X], TypedPath] = None` works as expected:
+
+```python
+class JudgeConfig(Typed):
+    llm: Annotated[LLMConfig, TypedPath]
+    refusal_classifier: Annotated[Optional[JudgeConfig], TypedPath] = None
+```
+
+The user can omit `refusal_classifier`, pass `None`, an instance, a dict, or a path. Loading only triggers when a non-`None` value is provided.
+
+### Validation always runs on loaded content
+
+Reading a file does NOT skip validation. The dict parsed from JSON/YAML goes through the same validation pipeline as any other dict input:
+
+```python
+class LLMConfig(Typed):
+    model: str
+    timeout: float = 30.0
+
+# A file with bad data:
+# config.json: {"model": "qwen", "timeout": "not-a-number"}
+
+app = App(llm="config.json")
+# ValueError: Cannot create Pydantic instance of type 'LLMConfig' ...
+#   timeout: Input should be a valid number, ...
+```
+
+The same applies to:
+- Missing required fields → caught.
+- Extra fields → rejected (Typed's `extra="forbid"`).
+- Field type mismatches → caught.
+
+### Errors
+
+| Scenario | Error type | Error message includes |
+|---|---|---|
+| Path doesn't exist | `FileNotFoundError` | field name, resolved absolute path, original input |
+| File is not a regular file (e.g., a directory named `foo.json`) | `ValueError` | field name, resolved path |
+| Corrupt JSON | `ValueError` | field name, file path, JSON parse error |
+| Corrupt YAML | `ValueError` | field name, file path, YAML parse error |
+| YAML file but `pyyaml` not installed | `ImportError` | install instruction |
+| File parses but top-level is not a JSON object / YAML mapping | `ValueError` | field name, actual type |
+| Loaded content fails inner type validation | `ValueError` (Pydantic `ValidationError` wrapped) | full field path, offending field, expected type |
+
+### What `TypedPath` is NOT
+
+These are deliberate non-features, not oversights:
+
+- **NOT a runtime type.** After validation, no field on any Typed instance has type `TypedPath`. The annotation is consumed during validation. Reading `judge.llm` always returns an `LLMConfig` instance.
+- **NOT lazy.** The file is read and parsed at construction time. If the file is missing or malformed, construction fails immediately.
+- **NOT cached.** Each construction reads the file fresh. If you load the same file twice, you get two distinct (but equal) instances.
+- **NOT for collection elements.** `List[Annotated[X, TypedPath]]` does NOT load each list element from a path. TypedPath only triggers on single-Typed fields. If you need a list of file-loadable items, load them in your code and pass the list of instances.
+- **NOT a global validator.** The path-loading machinery only runs on classes that have at least one TypedPath-annotated field. Pure Typeds with no TypedPath fields pay zero overhead per construction.
+- **NOT for remote URIs.** Only local filesystem paths are supported (no `s3://`, no `https://`). Add fetching code yourself if you need to download a config.
+
+### Mixing TypedPath with other Typed features
+
+`TypedPath` composes cleanly with everything else in Typed:
+
+- **Identity preservation**: still applies for the instance branch (Form 1). When the user passes a pre-built instance, `o.llm is the_instance`. The path-loading branch always produces a fresh instance (the file system is the source of truth).
+- **`post_initialize`**: runs once on every instance produced, including those loaded from files. The framework's [#12876 idempotency marker](#identity-preservation-and-pre-built-instances) ensures heavy `post_initialize` work runs exactly once per instance.
+- **Registry dispatch**: `Annotated[BackendBase, TypedPath]` works alongside `__type__` discriminators. The loaded JSON/YAML can include a `__type__` key to select the concrete subclass. See [Typed CLI guide → Pattern: Registry dispatch](typed-cli.md#pattern-registry-dispatch-with-__type__-discriminator).
+- **Lifecycle hooks**: `pre_initialize` and `pre_validate` run after path loading (so they see the dict, not the path string).
+
+### When to use `TypedPath`
+
+| Need | Use |
+|---|---|
+| Single root config from a JSON/YAML file | [JSON-File config pattern](typed-cli.md#pattern-json-file-config-with-cli-overrides) (small argparse wrapper) |
+| Multiple deeply-nested config files cross-referencing each other | `TypedPath` — much cleaner than chaining the wrapper for every sub-config |
+| Some fields are simple inline values, others are big nested configs | `TypedPath` on the big fields, leave the simple ones plain |
+| All config comes from CLI flags / env vars | Plain Typed; no TypedPath needed |
+
+The trojanshot use case is squarely TypedPath territory: `JudgeConfig` references an `LLMConfig` file, which references an `InfraConfig` file, and each is independently editable. The `Annotated[X, TypedPath]` annotation models this cleanly without any custom argv preprocessor or config-loader scaffolding.
 
 ## Default Value Validation and Conversion
 
